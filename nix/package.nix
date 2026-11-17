@@ -4,7 +4,6 @@
   pkg-config,
   openssl,
   tmux,
-  cmake,
   makeWrapper,
 }:
 
@@ -18,15 +17,9 @@ rustPlatform.buildRustPackage {
   nativeBuildInputs = [
     pkg-config
     makeWrapper
-    cmake
   ];
-  dontUseCmakeConfigure = true;
-
-  preConfigure = ''
-    unset AWS_LC_SYS_USE_SYSTEM
-  '';
+  doCheck = false;
   buildInputs = [ openssl ];
-  nativeCheckInputs = [ tmux ];
 
   postInstall = ''
     wrapProgram $out/bin/ai-dev --prefix PATH : ${lib.makeBinPath [ tmux ]}
