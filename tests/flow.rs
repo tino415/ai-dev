@@ -1,0 +1,242 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use ai_dev::core::Core;
+use ai_dev::model::*;
+use tempfile::TempDir;
+
+struct Harness {
+    dir: TempDir,
+    core: Arc<Core>,
+    socket: String,
+}
+
+impl Drop for Harness {
+    fn drop(&mut self) {
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", &self.socket, "kill-server"])
+            .output();
+    }
+}
+
+fn harness() -> Harness {
+    let dir = tempfile::tempdir().unwrap();
+    let socket = format!("aidev-test-{}", short_id());
+    let core = Core::open(dir.path(), "http://localhost:7471", &socket)
+        .unwrap()
+        .with_block_timeout(Duration::from_secs(20));
+    Harness { dir, core, socket }
+}
+
+async fn bash_session(core: &Arc<Core>, name: &str) {
+    core.save_session(SessionDef::from_preset(name, Preset::Bash, "bash --norc", &[]))
+        .unwrap();
+    core.start_session(name).await.unwrap();
+}
+
+async fn wait_for(core: &Core, id: &str, wanted: BlockState) -> Block {
+    for _ in 0..200 {
+        let block = core.block(id).unwrap();
+        if block.state == wanted {
+            return block;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("block {id} never reached {wanted:?}: {:?}", core.block(id));
+}
+
+#[tokio::test]
+async fn bash_block_returns_its_full_output_without_the_marker() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+
+    let block = h.core.add_block("nb", "sh", "echo hello\nseq 1 300", MARTIN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    let output = done.output.unwrap();
+    assert!(output.contains("hello"));
+    assert!(output.contains("\n300"));
+    assert!(!output.contains("AIDEV_"));
+}
+
+#[tokio::test]
+async fn agent_block_waits_for_the_run_click_and_output_for_the_release() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+
+    let block = h.core.add_block("nb", "sh", "echo proposed", "agent-a").unwrap();
+    tokio::time::sleep(Duration::from_millis(800)).await;
+    let waiting = h.core.block(&block.id).unwrap();
+    assert_eq!(waiting.state, BlockState::Pending);
+    assert!(waiting.output.is_none());
+
+    h.core.approve_run(&block.id, None, None).unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+    assert_eq!(done.read, ReadDecision::Undecided);
+
+    h.core.decide_read(&block.id, ReadDecision::Released).unwrap();
+    assert_eq!(h.core.block(&block.id).unwrap().read, ReadDecision::Released);
+}
+
+#[tokio::test]
+async fn auto_policies_run_and_release_without_a_click_for_agents() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let mut def = h.core.session("sh").unwrap();
+    def.run_policy = Policy::Auto;
+    def.read_policy = Policy::Auto;
+    h.core.save_session(def).unwrap();
+
+    let block = h.core.add_block("nb", "sh", "echo automatic", "agent-a").unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert!(done.output.unwrap().contains("automatic"));
+    assert_eq!(done.read, ReadDecision::Released);
+}
+
+#[tokio::test]
+async fn edited_code_runs_and_keeps_the_proposal_and_note() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+
+    let block = h.core.add_block("nb", "sh", "echo original", "agent-a").unwrap();
+    h.core
+        .approve_run(&block.id, Some("echo edited".into()), Some("use this".into()))
+        .unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert!(done.output.unwrap().contains("edited"));
+    assert_eq!(done.proposed_code.as_deref(), Some("echo original"));
+    assert_eq!(done.note.as_deref(), Some("use this"));
+}
+
+#[tokio::test]
+async fn secret_values_are_filled_at_run_time_and_masked_everywhere() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    h.core.create_profile("prod").unwrap();
+    h.core
+        .set_variable(ai_dev::core::VariableScope::Profile("prod".into()), "pw", "s3cr3t-value", true)
+        .unwrap();
+    h.core.set_notebook_profile("nb", Some("prod".into())).unwrap();
+    bash_session(&h.core, "sh").await;
+
+    let block = h.core.add_block("nb", "sh", "echo {{pw}}", "agent-a").unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    let output = done.output.unwrap();
+    assert!(output.contains("***"));
+    assert!(!output.contains("s3cr3t-value"));
+    let notebook_file = std::fs::read_to_string(h.dir.path().join("notebooks/nb.md")).unwrap();
+    assert!(!notebook_file.contains("s3cr3t-value"));
+    assert!(notebook_file.contains("{{pw}}"));
+}
+
+#[tokio::test]
+async fn unknown_variable_fails_the_block_without_typing_anything() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+
+    let block = h.core.add_block("nb", "sh", "echo {{missing}}", MARTIN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    let failed = wait_for(&h.core, &block.id, BlockState::Failed).await;
+
+    assert!(failed.output.unwrap().contains("missing"));
+}
+
+#[tokio::test]
+async fn notebook_file_holds_blocks_and_no_output_and_survives_a_restart() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo visible-only-in-memory", MARTIN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    let file = std::fs::read_to_string(h.dir.path().join("notebooks/nb.md")).unwrap();
+    assert!(file.contains("echo visible-only-in-memory"));
+    assert!(!file.contains("AIDEV_"));
+    assert_eq!(file.matches("visible-only-in-memory").count(), 1);
+
+    let reopened = Core::open(h.dir.path(), "http://localhost:7471", &h.socket).unwrap();
+    let blocks = reopened.blocks("nb");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].state, BlockState::Pending);
+    assert!(blocks[0].output.is_none());
+}
+
+#[tokio::test]
+async fn two_notebooks_share_one_session_and_keep_their_outputs_apart() {
+    let h = harness();
+    h.core.create_notebook("one").unwrap();
+    h.core.create_notebook("two").unwrap();
+    bash_session(&h.core, "sh").await;
+
+    let first = h.core.add_block("one", "sh", "sleep 1; echo first-output", MARTIN).unwrap();
+    let second = h.core.add_block("two", "sh", "echo second-output", MARTIN).unwrap();
+    h.core.approve_run(&first.id, None, None).unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    h.core.approve_run(&second.id, None, None).unwrap();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(h.core.block(&second.id).unwrap().state, BlockState::Queued);
+
+    let first_done = wait_for(&h.core, &first.id, BlockState::Finished).await;
+    let second_done = wait_for(&h.core, &second.id, BlockState::Finished).await;
+    let (first_out, second_out) = (first_done.output.unwrap(), second_done.output.unwrap());
+    assert!(first_out.contains("first-output") && !first_out.contains("second-output"));
+    assert!(second_out.contains("second-output") && !second_out.contains("first-output"));
+}
+
+#[tokio::test]
+async fn a_session_idle_past_its_timeout_is_stopped() {
+    let h = harness();
+    bash_session(&h.core, "sh").await;
+    let mut def = h.core.session("sh").unwrap();
+    def.idle_timeout_secs = 1;
+    h.core.save_session(def).unwrap();
+    assert!(h.core.is_running("sh").await);
+
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    h.core.reap_idle_sessions().await;
+
+    assert!(!h.core.is_running("sh").await);
+}
+
+#[tokio::test]
+async fn revoked_notebook_tokens_are_refused() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    let ai_dev::core::JoinOutcome::Pending { .. } = h.core.request_join("nb", "agent-a").unwrap() else {
+        panic!("expected a pending join");
+    };
+    let join_id = h.core.pending_joins("nb")[0].id.clone();
+    assert!(h.core.pending_joins("nb").len() == 1);
+    h.core.approve_join(&join_id).unwrap();
+    let ai_dev::core::JoinOutcome::Token(token) = h.core.request_join("nb", "agent-a").unwrap() else {
+        panic!("expected a token after approval");
+    };
+
+    assert_eq!(h.core.admit(&token).unwrap().agent, "agent-a");
+    let token_id = h.core.notebook("nb").unwrap().tokens[0].id.clone();
+    h.core.revoke_token("nb", &token_id).unwrap();
+
+    assert!(h.core.admit(&token).is_none());
+}
+
+#[tokio::test]
+async fn failed_setup_command_stops_the_session() {
+    let h = harness();
+    let def = SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &["echo {{nope}}".to_string()]);
+    h.core.save_session(def).unwrap();
+
+    assert!(h.core.start_session("sh").await.is_err());
+    assert!(!h.core.is_running("sh").await);
+}
