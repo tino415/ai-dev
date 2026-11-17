@@ -13,8 +13,7 @@ async fn main() {
     let result = match std::env::args().nth(1).as_deref() {
         Some("serve") => serve().await,
         Some("enroll") => print_enroll_code(),
-        Some("token") => print_static_token(),
-        _ => Err("usage: ai-dev serve | enroll | token".to_string()),
+        _ => Err("usage: ai-dev serve | enroll".to_string()),
     };
     if let Err(error) = result {
         eprintln!("{error}");
@@ -41,11 +40,10 @@ fn print_enroll_code() -> Result<(), String> {
     Ok(())
 }
 
-fn print_static_token() -> Result<(), String> {
-    let dir = data_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    println!("{}", Auth::create_static_token(&dir)?);
-    Ok(())
+fn agent_token_file() -> PathBuf {
+    std::env::var_os("AI_DEV_AGENT_TOKEN_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| data_dir().join("agent_token"))
 }
 
 async fn serve() -> Result<(), String> {
@@ -53,7 +51,7 @@ async fn serve() -> Result<(), String> {
     let origin = origin();
     let socket = std::env::var("AI_DEV_TMUX_SOCKET").unwrap_or_else(|_| DEFAULT_TMUX_SOCKET.into());
     let core = Core::open(&dir, &origin, &socket)?;
-    let auth = std::sync::Arc::new(Auth::new(&dir, &origin)?);
+    let auth = std::sync::Arc::new(Auth::new(&dir, &origin, &agent_token_file())?);
     let origin_host = origin
         .split("://")
         .nth(1)

@@ -18,8 +18,10 @@ async fn server() -> Server {
     let dir = tempfile::tempdir().unwrap();
     let origin = "http://localhost:7471";
     let core = Core::open(dir.path(), origin, &format!("aidev-test-{}", short_id())).unwrap();
-    let auth = Arc::new(Auth::new(dir.path(), origin).unwrap());
-    let static_token = Auth::create_static_token(dir.path()).unwrap();
+    let token_file = dir.path().join("agent_token");
+    let auth = Arc::new(Auth::new(dir.path(), origin, &token_file).unwrap());
+    let static_token = "test-agent-token".to_string();
+    std::fs::write(&token_file, &static_token).unwrap();
     let app = ai_dev::app_router(Arc::clone(&core), auth, vec!["127.0.0.1".into(), "localhost".into()]);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -208,4 +210,12 @@ async fn secret_values_never_reach_list_variables() {
     let text = reply.to_string();
     assert!(!text.contains("hunter2-secret"));
     assert!(text.contains("prod-ns"));
+}
+
+#[tokio::test]
+async fn an_mcp_call_is_refused_while_the_token_file_is_missing() {
+    let s = server().await;
+    std::fs::remove_file(s._dir.path().join("agent_token")).unwrap();
+    let (status, _) = s.call_tool(Some(&s.static_token), "list_sessions", json!({})).await;
+    assert_eq!(status, 401);
 }

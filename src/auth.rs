@@ -27,6 +27,7 @@ struct EnrollCode {
 
 pub struct Auth {
     dir: PathBuf,
+    agent_token_file: PathBuf,
     webauthn: Webauthn,
     secure_cookie: bool,
     sessions: Mutex<HashSet<String>>,
@@ -34,7 +35,7 @@ pub struct Auth {
 }
 
 impl Auth {
-    pub fn new(dir: &Path, origin: &str) -> Result<Auth> {
+    pub fn new(dir: &Path, origin: &str, agent_token_file: &Path) -> Result<Auth> {
         let origin_url = Url::parse(origin).map_err(|e| e.to_string())?;
         let rp_id = origin_url.host_str().ok_or("origin has no host")?.to_string();
         let webauthn = WebauthnBuilder::new(&rp_id, &origin_url)
@@ -44,6 +45,7 @@ impl Auth {
             .map_err(|e| e.to_string())?;
         Ok(Auth {
             dir: dir.to_path_buf(),
+            agent_token_file: agent_token_file.to_path_buf(),
             webauthn,
             secure_cookie: origin_url.scheme() == "https",
             sessions: Mutex::new(HashSet::new()),
@@ -51,24 +53,14 @@ impl Auth {
         })
     }
 
-    // static tokens for the MCP endpoint
-
-    pub fn create_static_token(dir: &Path) -> Result<String> {
-        let token = secret_token();
-        let path = dir.join("static_tokens");
-        let mut hashes = std::fs::read_to_string(&path).unwrap_or_default();
-        hashes.push_str(&hash_token(&token));
-        hashes.push('\n');
-        std::fs::write(&path, hashes).map_err(|e| e.to_string())?;
-        Ok(token)
-    }
+    // the agent token for the MCP endpoint
 
     pub fn static_token_valid(&self, token: &str) -> bool {
-        let hash = hash_token(token);
-        std::fs::read_to_string(self.dir.join("static_tokens"))
-            .unwrap_or_default()
-            .lines()
-            .any(|line| line == hash)
+        let Ok(expected) = std::fs::read_to_string(&self.agent_token_file) else {
+            return false;
+        };
+        let expected = expected.trim();
+        !expected.is_empty() && hash_token(expected) == hash_token(token)
     }
 
     // enrollment

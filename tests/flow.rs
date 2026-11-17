@@ -290,3 +290,20 @@ async fn failed_setup_command_stops_the_session() {
     assert!(h.core.start_session("sh").await.is_err());
     assert!(!h.core.is_running("sh").await);
 }
+
+#[tokio::test]
+async fn a_bash_session_starts_in_a_login_shell() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    h.core
+        .save_session(SessionDef::from_preset("sh", Preset::Bash, "", &[]))
+        .unwrap();
+    h.core.start_session("sh").await.unwrap();
+
+    let block = h.core.add_block("nb", "sh", "shopt login_shell", HUMAN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    let output = done.output.unwrap();
+    assert!(output.contains("login_shell") && output.contains("on"), "{output:?}");
+}

@@ -5,6 +5,8 @@ use std::process::Output;
 
 use tokio::process::Command;
 
+const LOGIN_SHELL: &str = r#"exec "$(getent passwd "$(id -un)" | cut -d: -f7)" -l"#;
+
 #[derive(Clone)]
 pub struct Tmux {
     socket: String,
@@ -29,7 +31,7 @@ impl Tmux {
 
     pub async fn start(&self, session: &str) -> Result<(), String> {
         self.create_private_log(session)?;
-        self.run(&["new-session", "-d", "-s", session, "-x", "220", "-y", "50"])
+        self.run(&["new-session", "-d", "-s", session, "-x", "220", "-y", "50", LOGIN_SHELL])
             .await?;
         let pipe = format!("cat >> '{}'", self.log_path(session).display());
         self.run(&["pipe-pane", "-t", &exact_pane(session), &pipe]).await
