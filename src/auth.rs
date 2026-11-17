@@ -11,6 +11,7 @@ use crate::core::{hash_token, Result};
 use crate::model::secret_token;
 
 const ENROLL_VALIDITY_SECS: u64 = 600;
+const MAX_OPEN_CHALLENGES: usize = 100;
 const COOKIE: &str = "aidev_session";
 const PASSKEY_USER: Uuid = Uuid::from_u128(0x6f77_6e65_72);
 
@@ -165,7 +166,11 @@ impl Auth {
 
     fn remember(&self, challenge: Challenge) -> String {
         let id = secret_token();
-        self.challenges.lock().expect("challenges").insert(id.clone(), challenge);
+        let mut challenges = self.challenges.lock().expect("challenges");
+        if challenges.len() >= MAX_OPEN_CHALLENGES {
+            challenges.clear();
+        }
+        challenges.insert(id.clone(), challenge);
         id
     }
 }

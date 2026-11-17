@@ -35,7 +35,7 @@ fn origin() -> String {
 
 fn print_enroll_code() -> Result<(), String> {
     let dir = data_dir();
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    ai_dev::core::create_private_dir(&dir)?;
     println!("{}", Auth::create_enroll_code(&dir)?);
     Ok(())
 }

@@ -76,7 +76,7 @@ in
       serviceConfig = {
         ExecStart = "${cfg.package}/bin/ai-dev serve";
         Restart = "on-failure";
-        NoNewPrivileges = true;
+        KillMode = "process";
       };
     };
   };

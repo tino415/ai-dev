@@ -80,7 +80,7 @@ pub fn hash_token(token: &str) -> String {
 
 impl Core {
     pub fn open(dir: &Path, origin: &str, tmux_socket: &str) -> Result<Arc<Core>> {
-        std::fs::create_dir_all(dir.join("notebooks")).map_err(|e| e.to_string())?;
+        create_private_dir(&dir.join("notebooks"))?;
         let persisted: Persisted = read_json(&dir.join("state.json"))?;
         let vars: Variables = read_json(&dir.join("variables.json"))?;
         let blocks = persisted
@@ -266,7 +266,9 @@ impl Core {
                 .last_activity
                 .entry(def.name.clone())
                 .or_insert(now);
-            if now.duration_since(last) >= Duration::from_secs(def.idle_timeout_secs) {
+            if self.tmux.has_attached_client(&def.name).await {
+                self.touch(&def.name);
+            } else if now.duration_since(last) >= Duration::from_secs(def.idle_timeout_secs) {
                 self.stop_session(&def.name).await;
             }
         }
@@ -275,6 +277,9 @@ impl Core {
     pub fn propose_session(&self, notebook: &str, agent: &str, def: SessionDef) -> Result<SessionProposal> {
         if !valid_name(&def.name) {
             return Err("names use a-z, 0-9, - and _".into());
+        }
+        if self.session(&def.name).is_some() {
+            return Err(format!("session {} already exists", def.name));
         }
         let proposal = SessionProposal {
             id: short_id(),
@@ -293,6 +298,9 @@ impl Core {
     pub async fn approve_proposal(&self, id: &str) -> Result<()> {
         let proposal = self.take_proposal(id)?;
         let name = proposal.def.name.clone();
+        if self.session(&name).is_some() {
+            return Err(format!("session {name} already exists"));
+        }
         self.save_session(proposal.def)?;
         self.start_session(&name).await
     }
@@ -475,14 +483,14 @@ impl Core {
             Ok(output) => {
                 block.output = Some(output);
                 block.state = BlockState::Finished;
-                if read_policy == Some(Policy::Auto) && block.proposed_by_agent() {
-                    block.read = ReadDecision::Released;
-                }
             }
             Err(error) => {
                 block.output = Some(vars::mask(&error, set));
                 block.state = BlockState::Failed;
             }
+        }
+        if read_policy == Some(Policy::Auto) && block.proposed_by_agent() {
+            block.read = ReadDecision::Released;
         }
     }
 
@@ -541,8 +549,8 @@ impl Core {
     // agents
 
     pub fn request_join(&self, notebook: &str, agent: &str) -> Result<JoinOutcome> {
-        if !valid_name(agent) {
-            return Err("agent names use a-z, 0-9, - and _".into());
+        if !valid_name(agent) || agent == HUMAN {
+            return Err("agent names use a-z, 0-9, - and _, and are not 'human'".into());
         }
         let mut state = self.state();
         notebook_mut(&mut state, notebook)?;
@@ -735,6 +743,15 @@ fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T>
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
         Err(e) => Err(format!("{}: {e}", path.display())),
     }
+}
+
+pub fn create_private_dir(path: &Path) -> Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(path)
+        .map_err(|e| e.to_string())
 }
 
 fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {

@@ -33,17 +33,27 @@ pub fn render(template: &str, set: &VariableSet) -> Result<String, String> {
 }
 
 pub fn mask(text: &str, set: &VariableSet) -> String {
-    set.values()
+    let mut values: Vec<&str> = set
+        .values()
         .filter(|variable| variable.secret && !variable.value.is_empty())
-        .fold(text.to_string(), |masked, variable| {
-            masked.replace(&variable.value, "***")
-        })
+        .map(|variable| variable.value.as_str())
+        .collect();
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values
+        .into_iter()
+        .fold(text.to_string(), |masked, value| masked.replace(value, "***"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::model::Variable;
+
+    #[test]
+    fn a_secret_inside_a_longer_secret_does_not_leak_the_rest() {
+        let masked = mask("abcdef", &set(&[("a", "abc", true), ("b", "abcdef", true)]));
+        assert_eq!(masked, "***");
+    }
 
     fn set(entries: &[(&str, &str, bool)]) -> VariableSet {
         entries

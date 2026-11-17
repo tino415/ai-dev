@@ -99,6 +99,35 @@ async fn auto_policies_run_and_release_without_a_click_for_agents() {
 }
 
 #[tokio::test]
+async fn a_failed_agent_block_is_released_under_an_auto_read_policy() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let mut def = h.core.session("sh").unwrap();
+    def.run_policy = Policy::Auto;
+    def.read_policy = Policy::Auto;
+    h.core.save_session(def).unwrap();
+
+    let block = h.core.add_block("nb", "sh", "echo {{undefined}}", "agent-a").unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Failed).await;
+
+    assert_eq!(done.read, ReadDecision::Released);
+}
+
+#[tokio::test]
+async fn an_agent_cannot_join_as_human_or_replace_an_existing_session() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    h.core
+        .save_session(SessionDef::from_preset("prod", Preset::Bash, "", &[]))
+        .unwrap();
+
+    assert!(h.core.request_join("nb", HUMAN).is_err());
+    let clash = SessionDef::from_preset("prod", Preset::Bash, "", &[]);
+    assert!(h.core.propose_session("nb", "agent-a", clash).is_err());
+}
+
+#[tokio::test]
 async fn edited_code_runs_and_keeps_the_proposal_and_note() {
     let h = harness();
     h.core.create_notebook("nb").unwrap();

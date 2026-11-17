@@ -447,6 +447,9 @@ async fn create_session(State(app): State<App>, Form(form): Form<NewSessionForm>
         .map(str::to_string)
         .collect();
     let def = SessionDef::from_preset(&form.name, preset, form.start_command.as_deref().unwrap_or_default(), &setup);
+    if app.core.session(&def.name).is_some() {
+        return Err(bad(format!("session {} already exists", def.name)));
+    }
     app.core.save_session(def).map_err(bad)?;
     Ok(Redirect::to("/sessions"))
 }

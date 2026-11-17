@@ -34,7 +34,7 @@ impl Tmux {
         self.run(&["new-session", "-d", "-s", session, "-x", "220", "-y", "50", LOGIN_SHELL])
             .await?;
         let pipe = format!("cat >> '{}'", self.log_path(session).display());
-        self.run(&["pipe-pane", "-t", &exact_pane(session), &pipe]).await
+        self.run(&["pipe-pane", "-t", &exact_pane(session), &pipe]).await.map(|_| ())
     }
 
     pub async fn stop(&self, session: &str) {
@@ -90,7 +90,13 @@ impl Tmux {
             .map_err(|e| e.to_string())
     }
 
-    async fn run(&self, args: &[&str]) -> Result<(), String> {
+    pub async fn has_attached_client(&self, session: &str) -> bool {
+        self.run(&["list-clients", "-t", &exact_session(session), "-F", "#{client_tty}"])
+            .await
+            .is_ok_and(|clients| !clients.trim().is_empty())
+    }
+
+    async fn run(&self, args: &[&str]) -> Result<String, String> {
         let output: Output = Command::new("tmux")
             .args(["-L", &self.socket, "-f", "/dev/null"])
             .args(args)
@@ -98,7 +104,7 @@ impl Tmux {
             .await
             .map_err(|e| format!("tmux: {e}"))?;
         if output.status.success() {
-            Ok(())
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
         } else {
             Err(format!(
                 "tmux {}: {}",
@@ -131,11 +137,18 @@ pub fn strip_terminal_escapes(text: &str) -> String {
                     }
                 }
                 Some(']') => {
-                    for next in chars.by_ref() {
+                    while let Some(next) = chars.next() {
                         if next == '\x07' {
                             break;
                         }
+                        if next == '\x1b' && chars.peek() == Some(&'\\') {
+                            chars.next();
+                            break;
+                        }
                     }
+                }
+                Some('(' | ')' | '*' | '+') => {
+                    chars.next();
                 }
                 _ => {}
             },
@@ -153,5 +166,12 @@ mod tests {
     #[test]
     fn strips_colors_and_carriage_returns() {
         assert_eq!(strip_terminal_escapes("\x1b[32mok\x1b[0m\r\n"), "ok\n");
+    }
+
+    #[test]
+    fn strips_titles_ended_by_either_terminator_and_charset_switches() {
+        assert_eq!(strip_terminal_escapes("\x1b]0;title\x1b\\ok"), "ok");
+        assert_eq!(strip_terminal_escapes("\x1b]0;title\x07ok"), "ok");
+        assert_eq!(strip_terminal_escapes("\x1b(Bok"), "ok");
     }
 }
