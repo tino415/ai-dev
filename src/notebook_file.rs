@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn holds_no_output() {
-        let mut block = Block::new("nb", "prod", "ls", "martin");
+        let mut block = Block::new("nb", "prod", "ls", "human");
         block.output = Some("SECRET OUTPUT".into());
         assert!(!serialize("nb", &[block]).contains("SECRET OUTPUT"));
     }

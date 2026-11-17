@@ -51,7 +51,7 @@ async fn bash_block_returns_its_full_output_without_the_marker() {
     h.core.create_notebook("nb").unwrap();
     bash_session(&h.core, "sh").await;
 
-    let block = h.core.add_block("nb", "sh", "echo hello\nseq 1 300", MARTIN).unwrap();
+    let block = h.core.add_block("nb", "sh", "echo hello\nseq 1 300", HUMAN).unwrap();
     h.core.approve_run(&block.id, None, None).unwrap();
     let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
 
@@ -144,7 +144,7 @@ async fn unknown_variable_fails_the_block_without_typing_anything() {
     h.core.create_notebook("nb").unwrap();
     bash_session(&h.core, "sh").await;
 
-    let block = h.core.add_block("nb", "sh", "echo {{missing}}", MARTIN).unwrap();
+    let block = h.core.add_block("nb", "sh", "echo {{missing}}", HUMAN).unwrap();
     h.core.approve_run(&block.id, None, None).unwrap();
     let failed = wait_for(&h.core, &block.id, BlockState::Failed).await;
 
@@ -156,7 +156,7 @@ async fn notebook_file_holds_blocks_and_no_output_and_survives_a_restart() {
     let h = harness();
     h.core.create_notebook("nb").unwrap();
     bash_session(&h.core, "sh").await;
-    let block = h.core.add_block("nb", "sh", "echo visible-only-in-memory", MARTIN).unwrap();
+    let block = h.core.add_block("nb", "sh", "echo visible-only-in-memory", HUMAN).unwrap();
     h.core.approve_run(&block.id, None, None).unwrap();
     wait_for(&h.core, &block.id, BlockState::Finished).await;
 
@@ -168,7 +168,7 @@ async fn notebook_file_holds_blocks_and_no_output_and_survives_a_restart() {
     let reopened = Core::open(h.dir.path(), "http://localhost:7471", &h.socket).unwrap();
     let blocks = reopened.blocks("nb");
     assert_eq!(blocks.len(), 1);
-    assert_eq!(blocks[0].state, BlockState::Pending);
+    assert_eq!(blocks[0].state, BlockState::Saved);
     assert!(blocks[0].output.is_none());
 }
 
@@ -179,8 +179,8 @@ async fn two_notebooks_share_one_session_and_keep_their_outputs_apart() {
     h.core.create_notebook("two").unwrap();
     bash_session(&h.core, "sh").await;
 
-    let first = h.core.add_block("one", "sh", "sleep 1; echo first-output", MARTIN).unwrap();
-    let second = h.core.add_block("two", "sh", "echo second-output", MARTIN).unwrap();
+    let first = h.core.add_block("one", "sh", "sleep 1; echo first-output", HUMAN).unwrap();
+    let second = h.core.add_block("two", "sh", "echo second-output", HUMAN).unwrap();
     h.core.approve_run(&first.id, None, None).unwrap();
     tokio::time::sleep(Duration::from_millis(300)).await;
     h.core.approve_run(&second.id, None, None).unwrap();
@@ -229,6 +229,56 @@ async fn revoked_notebook_tokens_are_refused() {
     h.core.revoke_token("nb", &token_id).unwrap();
 
     assert!(h.core.admit(&token).is_none());
+}
+
+#[tokio::test]
+async fn stopping_a_session_leaves_one_whose_name_extends_it() {
+    let h = harness();
+    bash_session(&h.core, "db").await;
+    bash_session(&h.core, "db2").await;
+
+    h.core.stop_session("db").await;
+
+    assert!(!h.core.is_running("db").await);
+    assert!(h.core.is_running("db2").await);
+}
+
+#[tokio::test]
+async fn unedited_multiline_code_from_a_browser_form_is_not_an_edit() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+
+    let block = h.core.add_block("nb", "sh", "echo a\necho b", "agent-a").unwrap();
+    h.core.approve_run(&block.id, Some("echo a\r\necho b".into()), None).unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert!(done.proposed_code.is_none());
+}
+
+#[tokio::test]
+async fn a_session_still_alive_after_a_restart_is_adopted_not_restarted() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let reopened = Core::open(h.dir.path(), "http://localhost:7471", &h.socket).unwrap();
+
+    reopened.start_session("sh").await.unwrap();
+    let block = reopened.add_block("nb", "sh", "echo adopted", HUMAN).unwrap();
+    reopened.approve_run(&block.id, None, None).unwrap();
+    let done = wait_for(&reopened, &block.id, BlockState::Finished).await;
+
+    assert!(done.output.unwrap().contains("adopted"));
+}
+
+#[tokio::test]
+async fn a_corrupt_state_file_is_reported_not_replaced_by_an_empty_one() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("state.json"), "{ truncated").unwrap();
+
+    let error = Core::open(dir.path(), "http://localhost:7471", "aidev-test-corrupt").err().unwrap();
+
+    assert!(error.contains("corrupt"));
 }
 
 #[tokio::test]

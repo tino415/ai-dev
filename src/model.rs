@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub const MARTIN: &str = "martin";
+pub const HUMAN: &str = "human";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -82,6 +82,7 @@ pub struct SessionProposal {
 #[serde(rename_all = "lowercase")]
 pub enum BlockState {
     Pending,
+    Saved,
     Queued,
     Running,
     Finished,
@@ -128,7 +129,7 @@ impl Block {
     }
 
     pub fn proposed_by_agent(&self) -> bool {
-        self.author != MARTIN
+        self.author != HUMAN
     }
 }
 

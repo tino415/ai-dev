@@ -32,4 +32,8 @@ An agent calls `join_notebook` and gets a link; after you admit it in the notebo
 
 `$AI_DEV_HOME/notebooks/<name>.md` holds blocks only, never output. Variable values, including secrets,
 are in `variables.json` (mode 0600). Secret values are filled in when a block runs and masked in output;
-agents only ever see their names.
+agents see only their names. Masking matches the literal value, so a block that transforms a secret
+(`echo {{pw}} | base64`) prints something it cannot mask: keep the read policy at `ask` for sessions
+that use secrets. The raw terminal log in `runtime/` (mode 0600) holds typed secrets until the session stops.
+
+A notebook reopened after a restart shows its blocks as `saved`: they hold code only and need a click to run again.

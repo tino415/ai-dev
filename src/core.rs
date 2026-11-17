@@ -81,8 +81,8 @@ pub fn hash_token(token: &str) -> String {
 impl Core {
     pub fn open(dir: &Path, origin: &str, tmux_socket: &str) -> Result<Arc<Core>> {
         std::fs::create_dir_all(dir.join("notebooks")).map_err(|e| e.to_string())?;
-        let persisted: Persisted = read_json(&dir.join("state.json")).unwrap_or_default();
-        let vars: Variables = read_json(&dir.join("variables.json")).unwrap_or_default();
+        let persisted: Persisted = read_json(&dir.join("state.json"))?;
+        let vars: Variables = read_json(&dir.join("variables.json"))?;
         let blocks = persisted
             .notebooks
             .iter()
@@ -212,30 +212,38 @@ impl Core {
     }
 
     pub async fn is_running(&self, name: &str) -> bool {
-        let tracked = self.state().last_activity.contains_key(name);
-        tracked && self.tmux.is_alive(name).await
+        self.tmux.is_alive(name).await
     }
 
     pub async fn start_session(&self, name: &str) -> Result<()> {
         let def = self.session(name).ok_or("unknown session")?;
         if self.is_running(name).await {
+            self.touch(name);
             return Ok(());
         }
         self.tmux.start(name).await?;
         self.touch(name);
-        let set = self.effective_variables(def.profile.as_deref(), "");
         let lock = self.session_lock(name);
         let _guard = lock.lock().await;
+        match self.run_start_sequence(&def).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.stop_session(name).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn run_start_sequence(&self, def: &SessionDef) -> Result<()> {
+        let set = self.effective_variables(def.profile.as_deref(), "");
         if !def.start_command.is_empty() {
             let command = vars::render(&def.start_command, &set)?;
-            self.tmux.type_lines(name, &command).await?;
+            self.tmux.type_lines(&def.name, &command).await?;
         }
         for setup in &def.setup_commands {
-            if let Err(error) = self.run_text(&def, &set, setup).await {
-                self.tmux.stop(name).await;
-                self.state().last_activity.remove(name);
-                return Err(format!("setup failed: {error}"));
-            }
+            self.run_text(def, &set, setup)
+                .await
+                .map_err(|error| format!("setup failed: {error}"))?;
         }
         Ok(())
     }
@@ -249,14 +257,16 @@ impl Core {
         let now = Instant::now();
         let defs = self.state().persisted.sessions.clone();
         for def in defs {
-            let idle = self
+            if !self.tmux.is_alive(&def.name).await {
+                self.state().last_activity.remove(&def.name);
+                continue;
+            }
+            let last = *self
                 .state()
                 .last_activity
-                .get(&def.name)
-                .map(|at| now.duration_since(*at));
-            let expired = idle.is_some_and(|idle| idle >= Duration::from_secs(def.idle_timeout_secs));
-            let vanished = idle.is_some() && !self.tmux.is_alive(&def.name).await;
-            if expired || vanished {
+                .entry(def.name.clone())
+                .or_insert(now);
+            if now.duration_since(last) >= Duration::from_secs(def.idle_timeout_secs) {
                 self.stop_session(&def.name).await;
             }
         }
@@ -381,7 +391,7 @@ impl Core {
         if !entry.sessions.iter().any(|s| s == session) {
             entry.sessions.push(session.to_string());
         }
-        let mut block = Block::new(notebook, session, code, author);
+        let mut block = Block::new(notebook, session, &normalize_newlines(code), author);
         let auto = block.proposed_by_agent() && policy == Policy::Auto;
         if auto {
             block.state = BlockState::Queued;
@@ -399,9 +409,10 @@ impl Core {
     pub fn approve_run(self: &Arc<Self>, id: &str, edited_code: Option<String>, note: Option<String>) -> Result<()> {
         let mut state = self.state();
         let block = block_mut(&mut state, id)?;
-        if block.state != BlockState::Pending {
+        if !matches!(block.state, BlockState::Pending | BlockState::Saved) {
             return Err("block is not waiting for a run".into());
         }
+        let edited_code = edited_code.map(|code| normalize_newlines(&code));
         if let Some(code) = edited_code.filter(|code| *code != block.code) {
             block.proposed_code = Some(std::mem::replace(&mut block.code, code));
         }
@@ -417,7 +428,7 @@ impl Core {
     pub fn reject_block(&self, id: &str, note: Option<String>) -> Result<()> {
         let mut state = self.state();
         let block = block_mut(&mut state, id)?;
-        if block.state != BlockState::Pending {
+        if !matches!(block.state, BlockState::Pending | BlockState::Saved) {
             return Err("block is not waiting for a run".into());
         }
         block.state = BlockState::Rejected;
@@ -495,6 +506,7 @@ impl Core {
         self.touch(&def.name);
         let deadline = Instant::now() + self.block_timeout;
         loop {
+            self.touch(&def.name);
             let text = self.tmux.log_since(&def.name, offset);
             if let Some(end) = text.find(&marker.full()) {
                 self.touch(&def.name);
@@ -706,19 +718,40 @@ fn load_blocks(dir: &Path, notebook: &str) -> Vec<Block> {
         .map(|saved| {
             let mut block = Block::new(notebook, &saved.session, &saved.code, &saved.author);
             block.id = saved.id;
+            block.state = BlockState::Saved;
             block
         })
         .collect()
 }
 
-fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Option<T> {
-    serde_json::from_slice(&std::fs::read(path).ok()?).ok()
+fn normalize_newlines(code: &str) -> String {
+    code.replace("\r\n", "\n")
+}
+
+fn read_json<T: serde::de::DeserializeOwned + Default>(path: &Path) -> Result<T> {
+    match std::fs::read(path) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map_err(|e| format!("{} is corrupt, fix or remove it: {e}", path.display())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(T::default()),
+        Err(e) => Err(format!("{}: {e}", path.display())),
+    }
 }
 
 fn write_json<T: serde::Serialize>(path: &Path, value: &T) -> Result<()> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
     let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
-    std::fs::write(path, bytes).map_err(|e| e.to_string())?;
-    std::fs::set_permissions(path, std::os::unix::fs::PermissionsExt::from_mode(0o600)).map_err(|e| e.to_string())
+    let temp = path.with_extension("json.tmp");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&temp)
+        .map_err(|e| e.to_string())?;
+    file.write_all(&bytes).map_err(|e| e.to_string())?;
+    file.sync_all().map_err(|e| e.to_string())?;
+    std::fs::rename(&temp, path).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

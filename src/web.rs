@@ -220,11 +220,12 @@ fn render_block(core: &Core, block: &Block) -> String {
         session = esc(&block.session),
         author = esc(&block.author)
     );
-    if block.state == BlockState::Pending {
+    if matches!(block.state, BlockState::Pending | BlockState::Saved) {
+        let run_label = if block.state == BlockState::Saved { "Run again" } else { "Run" };
         html.push_str(&format!(
             "<form method=post action=\"/b/{id}/run\"><textarea name=code>{code}</textarea>\
 <input name=note placeholder=\"note for the agent\" style=\"width:60%\"> \
-<button>Run</button><button formaction=\"/b/{id}/reject\">Reject</button></form>",
+<button>{run_label}</button><button formaction=\"/b/{id}/reject\">Reject</button></form>",
             id = block.id,
             code = esc(&block.code)
         ));
@@ -267,7 +268,7 @@ struct AddBlockForm {
 }
 
 async fn add_block(State(app): State<App>, Path(name): Path<String>, Form(form): Form<AddBlockForm>) -> Done {
-    app.core.add_block(&name, &form.session, &form.code, MARTIN).map_err(bad)?;
+    app.core.add_block(&name, &form.session, &form.code, HUMAN).map_err(bad)?;
     Ok(Redirect::to(&format!("/n/{name}")))
 }
 

@@ -45,7 +45,6 @@ in
         ExecStart = "${cfg.package}/bin/ai-dev serve";
         Restart = "on-failure";
         NoNewPrivileges = true;
-        PrivateTmp = true;
       };
     };
   };

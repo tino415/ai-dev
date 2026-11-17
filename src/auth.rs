@@ -12,7 +12,7 @@ use crate::model::secret_token;
 
 const ENROLL_VALIDITY_SECS: u64 = 600;
 const COOKIE: &str = "aidev_session";
-const OWNER: Uuid = Uuid::from_u128(0x6d61_7274_696e);
+const PASSKEY_USER: Uuid = Uuid::from_u128(0x6f77_6e65_72);
 
 enum Challenge {
     Register(PasskeyRegistration),
@@ -136,7 +136,7 @@ impl Auth {
         let exclude = existing.iter().map(|p| p.cred_id().clone()).collect::<Vec<_>>();
         let (options, state) = self
             .webauthn
-            .start_passkey_registration(OWNER, "martin", "martin", Some(exclude))
+            .start_passkey_registration(PASSKEY_USER, "owner", "owner", Some(exclude))
             .map_err(|e| e.to_string())?;
         Ok((self.remember(Challenge::Register(state)), options))
     }

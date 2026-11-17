@@ -85,13 +85,13 @@ struct ReadBlockArgs {
 
 #[tool_router]
 impl Mcp {
-    #[tool(description = "Ask to join a notebook. Returns a link for Martin to approve; call again after he approves to receive your notebook token.")]
+    #[tool(description = "Ask to join a notebook. Returns a link for the owner to approve; call again after the approval to receive your notebook token.")]
     async fn join_notebook(&self, Parameters(args): Parameters<JoinArgs>) -> String {
         reply(self.core.request_join(&args.notebook, &args.agent).map(|outcome| match outcome {
             JoinOutcome::Pending { approve_link } => json!({
-                "status": "waiting for Martin to approve",
+                "status": "waiting for the owner to approve",
                 "approve_link": approve_link,
-                "next": "tell Martin in your chat, then call join_notebook again once he says he approved",
+                "next": "tell the owner in your chat, then call join_notebook again once they say they approved",
             }),
             JoinOutcome::Token(token) => json!({ "status": "joined", "token": token }),
         }))
@@ -142,7 +142,7 @@ impl Mcp {
         }))
     }
 
-    #[tool(description = "Propose a new session for Martin to start or reject. Returns a link to the proposal.")]
+    #[tool(description = "Propose a new session for the owner to start or reject. Returns a link to the proposal.")]
     async fn propose_session(&self, Parameters(args): Parameters<ProposeSessionArgs>) -> String {
         reply(self.admit(&args.token).and_then(|admission| {
             let preset = Preset::parse(&args.preset).ok_or("preset must be bash, iex, psql or mysql")?;
@@ -154,13 +154,13 @@ impl Mcp {
             );
             self.core.propose_session(&admission.notebook, &admission.agent, def)?;
             Ok(json!({
-                "status": "proposed, waiting for Martin to start it",
+                "status": "proposed, waiting for the owner to start it",
                 "link": format!("{}/sessions", self.core.origin()),
             }))
         }))
     }
 
-    #[tool(description = "Propose a block of code to run in a session. It runs only after Martin clicks Run (or the session's run policy is auto). Returns the block id and a link; tell Martin in your chat you are waiting, then end your turn.")]
+    #[tool(description = "Propose a block of code to run in a session. It runs only after the owner clicks Run (or the session's run policy is auto). Returns the block id and a link; tell the owner in your chat you are waiting, then end your turn.")]
     async fn propose_block(&self, Parameters(args): Parameters<ProposeBlockArgs>) -> String {
         reply(self.admit(&args.token).and_then(|admission| {
             let block = self
@@ -170,7 +170,7 @@ impl Mcp {
         }))
     }
 
-    #[tool(description = "Read a block's state. Output is returned only after Martin released it; large output comes in pages. If Martin edited your code or left a note, they are shown here.")]
+    #[tool(description = "Read a block's state. Output is returned only after the owner released it; large output comes in pages. If the owner edited your code or left a note, they are shown here.")]
     async fn read_block(&self, Parameters(args): Parameters<ReadBlockArgs>) -> String {
         reply(self.admit(&args.token).and_then(|admission| {
             let block = self
@@ -193,15 +193,15 @@ impl Mcp {
             "code": block.code,
         });
         if let Some(original) = &block.proposed_code {
-            view["edited_by_martin_from"] = json!(original);
+            view["edited_by_owner_from"] = json!(original);
         }
         if let Some(note) = &block.note {
             view["note"] = json!(note);
         }
         view["output"] = match (block.read, &block.output) {
             (ReadDecision::Released, Some(output)) => paged(output, page),
-            (ReadDecision::Hidden, Some(_)) => json!("Martin kept the output hidden"),
-            (_, Some(_)) => json!("finished, waiting for Martin to release the output"),
+            (ReadDecision::Hidden, Some(_)) => json!("the owner kept the output hidden"),
+            (_, Some(_)) => json!("finished, waiting for the owner to release the output"),
             (_, None) => Value::Null,
         };
         view
