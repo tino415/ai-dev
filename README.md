@@ -33,7 +33,21 @@ Until the file exists the endpoint refuses every call. Tools: `join_notebook`,
 `list_notebooks`, `list_sessions`, `list_variables`, `propose_session`, `propose_block`, `read_block`.
 
 An agent calls `join_notebook` and gets a link; after you admit it in the notebook page, calling
-`join_notebook` again returns a notebook token that every other tool takes. Tokens last until revoked.
+`join_notebook` again returns a notebook token that every other tool takes. Tokens last until revoked;
+an agent that joins again under the same name replaces its earlier token.
+`propose_block` and `propose_session` take a `why`, which the notebook page shows above the proposal.
+
+The endpoint is stateless: a call needs no `mcp-session-id`, so a restart of ai-dev does not break a
+connected agent.
+
+## Test
+
+```
+nix develop -c cargo test
+```
+
+`tests/e2e.rs` drives a headless chromium from the dev shell against the binary, started with the
+unit's narrow environment.
 
 ## Data
 

@@ -139,10 +139,10 @@ async fn without_the_notebook_token_an_agent_cannot_propose_or_read() {
         .unwrap();
 
     for (tool, args) in [
-        ("propose_block", json!({ "token": "bogus", "session": "sh", "code": "ls" })),
+        ("propose_block", json!({ "token": "bogus", "session": "sh", "code": "ls", "why": "to list" })),
         ("read_block", json!({ "token": "bogus", "block_id": "x" })),
         ("list_variables", json!({ "token": "bogus" })),
-        ("propose_session", json!({ "token": "bogus", "name": "s2", "preset": "bash" })),
+        ("propose_session", json!({ "token": "bogus", "name": "s2", "preset": "bash", "why": "to compare" })),
     ] {
         let (status, reply) = s.call_tool(Some(&s.static_token), tool, args).await;
         assert_eq!(status, 200, "{tool}: {reply}");
@@ -171,10 +171,15 @@ async fn joined_agent_proposes_and_reads_through_mcp_and_a_revoked_token_stops_w
     let token = Server::tool_text(&joined)["token"].as_str().unwrap().to_string();
 
     let (_, proposed) = s
-        .call_tool(Some(&s.static_token), "propose_block", json!({ "token": token, "session": "sh", "code": "ls" }))
+        .call_tool(
+            Some(&s.static_token),
+            "propose_block",
+            json!({ "token": token, "session": "sh", "code": "ls", "why": "to see the files" }),
+        )
         .await;
     let view = Server::tool_text(&proposed);
     assert_eq!(view["state"], "pending");
+    assert_eq!(view["why"], "to see the files");
     assert_eq!(view["output"], Value::Null);
     let block_id = view["block_id"].as_str().unwrap().to_string();
     assert_eq!(s.core.block(&block_id).unwrap().author, "agent-a");
@@ -210,6 +215,30 @@ async fn secret_values_never_reach_list_variables() {
     let text = reply.to_string();
     assert!(!text.contains("hunter2-secret"));
     assert!(text.contains("prod-ns"));
+}
+
+#[tokio::test]
+async fn an_mcp_call_needs_no_session_so_it_survives_a_restart() {
+    let s = server().await;
+    assert_eq!(s.initialize(Some(&s.static_token)).await, None);
+    for session in [None, Some("from-before-the-restart")] {
+        let mut request = s
+            .client
+            .post(format!("{}/mcp", s.base))
+            .header("accept", "application/json, text/event-stream")
+            .bearer_auth(&s.static_token)
+            .json(&json!({
+                "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                "params": { "name": "list_notebooks", "arguments": {} }
+            }));
+        if let Some(session) = session {
+            request = request.header("mcp-session-id", session);
+        }
+        let response = request.send().await.unwrap();
+        assert_eq!(response.status(), 200, "{session:?}");
+        let reply: Value = response.json().await.unwrap();
+        assert!(reply["result"]["content"][0]["text"].is_string(), "{session:?}: {reply}");
+    }
 }
 
 #[tokio::test]

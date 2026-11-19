@@ -6,14 +6,17 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.104"
 axum = "0.8.9"
+futures = "0.3.34"
 hex = "0.4.3"
 http = "1.5.0"
+libc = "0.2.191"
 rmcp = { version = "3.11.0", features = ["server", "transport-streamable-http-server", "macros", "schemars"] }
 schemars = "1.2.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
 sha2 = "0.11.1"
 tokio = { version = "1.54.1", features = ["full"] }
+tokio-stream = { version = "0.1.19", features = ["sync"] }
 tokio-util = "0.7.20"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.23"
@@ -22,5 +25,6 @@ webauthn-rs = { version = "0.6.2", features = ["danger-allow-state-serialisation
 webauthn-rs-proto = "0.6.2"
 
 [dev-dependencies]
+chromiumoxide = "0.9.1"
 reqwest = { version = "0.13.5", features = ["json"] }
 tempfile = "3.27.0"

@@ -4,6 +4,7 @@ pub mod html;
 pub mod mcp;
 pub mod model;
 pub mod notebook_file;
+pub mod notebook_view;
 pub mod tmux;
 pub mod vars;
 pub mod web;
@@ -28,6 +29,7 @@ pub fn app_router(core: Arc<Core>, auth: Arc<Auth>, allowed_hosts: Vec<String>) 
         Default::default(),
         StreamableHttpServerConfig::default()
             .with_allowed_hosts(allowed_hosts)
+            .with_legacy_session_mode(false)
             .with_json_response(true),
     );
     let mcp = Router::new()

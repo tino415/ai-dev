@@ -1,3 +1,4 @@
+use std::ffi::CStr;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
@@ -5,7 +6,7 @@ use std::process::Output;
 
 use tokio::process::Command;
 
-const LOGIN_SHELL: &str = r#"exec "$(getent passwd "$(id -un)" | cut -d: -f7)" -l"#;
+const LAST_LINES_OF_A_DEAD_PANE: usize = 20;
 
 #[derive(Clone)]
 pub struct Tmux {
@@ -30,9 +31,15 @@ impl Tmux {
     }
 
     pub async fn start(&self, session: &str) -> Result<(), String> {
+        let shell = login_shell()?;
         self.create_private_log(session)?;
-        self.run(&["new-session", "-d", "-s", session, "-x", "220", "-y", "50", LOGIN_SHELL])
-            .await?;
+        let _ = self.run(&["kill-session", "-t", &exact_session(session)]).await;
+        self.run(&[
+            "start-server", ";",
+            "set-option", "-wg", "remain-on-exit", "on", ";",
+            "new-session", "-d", "-s", session, "-x", "220", "-y", "50", &shell, "-l",
+        ])
+        .await?;
         let pipe = format!("cat >> '{}'", self.log_path(session).display());
         self.run(&["pipe-pane", "-t", &exact_pane(session), &pipe]).await.map(|_| ())
     }
@@ -43,7 +50,23 @@ impl Tmux {
     }
 
     pub async fn is_alive(&self, session: &str) -> bool {
-        self.run(&["has-session", "-t", &exact_session(session)]).await.is_ok()
+        self.pane_dead(session).await == Some(false)
+    }
+
+    pub async fn dead_pane_output(&self, session: &str) -> Option<String> {
+        if self.pane_dead(session).await != Some(true) {
+            return None;
+        }
+        let screen = self.run(&["capture-pane", "-p", "-J", "-t", &exact_pane(session)]).await.ok()?;
+        let lines: Vec<&str> = screen.trim_end().lines().collect();
+        Some(lines[lines.len().saturating_sub(LAST_LINES_OF_A_DEAD_PANE)..].join("\n"))
+    }
+
+    async fn pane_dead(&self, session: &str) -> Option<bool> {
+        self.run(&["list-panes", "-t", &exact_pane(session), "-F", "#{pane_dead}"])
+            .await
+            .ok()
+            .map(|flags| flags.lines().next() == Some("1"))
     }
 
     pub async fn type_lines(&self, session: &str, text: &str) -> Result<(), String> {
@@ -113,6 +136,19 @@ impl Tmux {
             ))
         }
     }
+}
+
+fn login_shell() -> Result<String, String> {
+    let uid = unsafe { libc::getuid() };
+    let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
+    let mut found: *mut libc::passwd = std::ptr::null_mut();
+    let mut buffer = vec![0 as libc::c_char; 16 * 1024];
+    let status = unsafe { libc::getpwuid_r(uid, &mut entry, buffer.as_mut_ptr(), buffer.len(), &mut found) };
+    if status != 0 || found.is_null() || entry.pw_shell.is_null() {
+        return Err(format!("no passwd entry for uid {uid}"));
+    }
+    let shell = unsafe { CStr::from_ptr(entry.pw_shell) }.to_string_lossy().into_owned();
+    Ok(if shell.is_empty() { "/bin/sh".into() } else { shell })
 }
 
 fn exact_session(session: &str) -> String {

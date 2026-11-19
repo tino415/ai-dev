@@ -124,7 +124,7 @@ async fn an_agent_cannot_join_as_human_or_replace_an_existing_session() {
 
     assert!(h.core.request_join("nb", HUMAN).is_err());
     let clash = SessionDef::from_preset("prod", Preset::Bash, "", &[]);
-    assert!(h.core.propose_session("nb", "agent-a", clash).is_err());
+    assert!(h.core.propose_session("nb", "agent-a", clash, "to compare").is_err());
 }
 
 #[tokio::test]
@@ -335,4 +335,19 @@ async fn a_bash_session_starts_in_a_login_shell() {
 
     let output = done.output.unwrap();
     assert!(output.contains("login_shell") && output.contains("on"), "{output:?}");
+}
+
+#[tokio::test]
+async fn the_composer_keeps_the_session_i_last_ran_in_after_a_sessions_change() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "first").await;
+    bash_session(&h.core, "second").await;
+    h.core.add_block("nb", "first", "echo a", "agent-a").unwrap();
+    h.core.add_block("nb", "second", "echo b", HUMAN).unwrap();
+
+    h.core.stop_session("first").await;
+    let composer = ai_dev::notebook_view::render(&h.core, "nb", ai_dev::notebook_view::Part::Composer).await;
+
+    assert!(composer.contains("<option selected>second</option>"), "{composer}");
 }
