@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -653,11 +654,10 @@ impl Core {
         }
         let rendered = vars::render(code, set)?;
         let marker = Marker::new();
+        let typed = marker.command(&def.marker_template);
         let offset = self.tmux.log_len(&def.name);
         self.tmux.type_lines(&def.name, &rendered).await?;
-        self.tmux
-            .type_lines(&def.name, &marker.command(&def.marker_template))
-            .await?;
+        self.tmux.type_lines(&def.name, &typed).await?;
         self.touch(&def.name);
         let deadline = Instant::now() + self.block_timeout;
         let mut next_liveness_check = Instant::now() + LIVENESS_CHECK;
@@ -666,17 +666,18 @@ impl Core {
             let text = self.tmux.log_since(&def.name, offset);
             if let Some(end) = text.find(&marker.full()) {
                 self.touch(&def.name);
-                return Ok(vars::mask(&clean_output(&text[..end], &marker), set));
+                let output = clean_output(&text[..end], &marker, &typed, Ended::AtTheMarker);
+                return Ok(vars::mask(&output, set));
             }
             if Instant::now() >= next_liveness_check {
                 if !self.is_running(&def.name).await {
-                    let partial = clean_output(&text, &marker);
+                    let partial = clean_output(&text, &marker, &typed, Ended::Early);
                     return Err(format!("session {} exited\n{partial}", def.name));
                 }
                 next_liveness_check = Instant::now() + LIVENESS_CHECK;
             }
             if Instant::now() >= deadline {
-                let partial = clean_output(&text, &marker);
+                let partial = clean_output(&text, &marker, &typed, Ended::Early);
                 return Err(format!(
                     "no end marker after {}s, the session may still be busy\n{partial}",
                     self.block_timeout.as_secs()
@@ -875,12 +876,37 @@ pub enum VariableScope {
     Notebook(String),
 }
 
-fn clean_output(raw: &str, marker: &Marker) -> String {
-    strip_terminal_escapes(raw)
-        .lines()
-        .filter(|line| !line.contains(&marker.head))
+enum Ended {
+    AtTheMarker,
+    Early,
+}
+
+fn clean_output(raw: &str, marker: &Marker, typed: &str, ended: Ended) -> String {
+    let text = strip_terminal_escapes(raw);
+    let lines: Vec<&str> = text.lines().collect();
+    let echoed_after_the_prompt = match ended {
+        Ended::AtTheMarker => lines.iter().rposition(|line| line.contains(&marker.head)),
+        Ended::Early => None,
+    };
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if Some(index) == echoed_after_the_prompt {
+                return None;
+            }
+            without_typed_ahead_echo(line, typed).filter(|line| !line.contains(&marker.head))
+        })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn without_typed_ahead_echo<'a>(line: &'a str, typed: &str) -> Option<Cow<'a, str>> {
+    if !line.contains(typed) {
+        return Some(Cow::Borrowed(line));
+    }
+    let output = line.replace(typed, "");
+    (!output.is_empty()).then_some(Cow::Owned(output))
 }
 
 fn notebook_mut<'a>(state: &'a mut State, name: &str) -> Result<&'a mut Notebook> {
@@ -983,5 +1009,30 @@ mod tests {
             assert!(!typed.contains(&marker.full()), "{preset:?}");
             assert!(typed.contains(&marker.head) && typed.contains(&marker.tail), "{preset:?}");
         }
+    }
+
+    #[test]
+    fn output_the_typed_ahead_marker_lands_on_is_kept() {
+        let marker = Marker::new();
+        let typed = marker.command(Preset::Bash.marker_template());
+        let raw = format!(
+            "uname -s && echo checks-passed\r\n\x1b[?2004l\r{typed}Linux\r\nchecks-passed\r\n\r\n\x1b[?2004h\r\r\n\
+\x1b[1;32m[\x1b]0;me@box: ~\x07me@box:~]$\x1b[0m {typed}\r\n\x1b[?2004l\r"
+        );
+
+        let output = clean_output(&raw, &marker, &typed, Ended::AtTheMarker);
+
+        assert_eq!(output.trim_end(), "uname -s && echo checks-passed\nLinux\nchecks-passed");
+    }
+
+    #[test]
+    fn output_the_typed_ahead_marker_lands_on_is_kept_when_the_session_exits_first() {
+        let marker = Marker::new();
+        let typed = marker.command(Preset::Bash.marker_template());
+        let raw = format!("uname -s; exit\r\n\x1b[?2004l\r{typed}Linux\r\nexit\r\n");
+
+        let output = clean_output(&raw, &marker, &typed, Ended::Early);
+
+        assert_eq!(output.trim_end(), "uname -s; exit\nLinux\nexit");
     }
 }
