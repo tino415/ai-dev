@@ -28,6 +28,7 @@
             pkg-config
             openssl
             tmux
+            chromium
           ];
         };
       });

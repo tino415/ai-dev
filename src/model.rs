@@ -75,6 +75,7 @@ pub struct SessionProposal {
     pub id: String,
     pub by: String,
     pub notebook: String,
+    pub why: String,
     pub def: SessionDef,
 }
 
@@ -105,6 +106,7 @@ pub struct Block {
     pub session: String,
     pub code: String,
     pub author: String,
+    pub why: Option<String>,
     pub state: BlockState,
     pub proposed_code: Option<String>,
     pub note: Option<String>,
@@ -120,6 +122,7 @@ impl Block {
             session: session.to_string(),
             code: code.to_string(),
             author: author.to_string(),
+            why: None,
             state: BlockState::Pending,
             proposed_code: None,
             note: None,

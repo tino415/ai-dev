@@ -1,9 +1,12 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
+use tokio::sync::broadcast;
 
 use crate::model::*;
 use crate::notebook_file;
@@ -13,6 +16,20 @@ use crate::vars;
 pub type Result<T> = std::result::Result<T, String>;
 
 pub const BLOCK_TIMEOUT: Duration = Duration::from_secs(120);
+const START_SETTLE: Duration = Duration::from_millis(500);
+const OUTPUT_POLL: Duration = Duration::from_millis(100);
+const LIVENESS_CHECK: Duration = Duration::from_secs(1);
+const CHANGES_BUFFERED: usize = 256;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Change {
+    BlockAdded { notebook: String, id: String },
+    Block { notebook: String, id: String },
+    Sessions,
+    Proposals,
+    Agents { notebook: String },
+    Variables,
+}
 
 pub struct Admission {
     pub notebook: String,
@@ -40,6 +57,8 @@ pub struct Core {
     block_timeout: Duration,
     state: Mutex<State>,
     session_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    changes: broadcast::Sender<Change>,
+    changes_sent: AtomicU64,
 }
 
 struct Marker {
@@ -81,7 +100,10 @@ pub fn hash_token(token: &str) -> String {
 impl Core {
     pub fn open(dir: &Path, origin: &str, tmux_socket: &str) -> Result<Arc<Core>> {
         create_private_dir(&dir.join("notebooks"))?;
-        let persisted: Persisted = read_json(&dir.join("state.json"))?;
+        let mut persisted: Persisted = read_json(&dir.join("state.json"))?;
+        for notebook in persisted.notebooks.iter_mut() {
+            keep_the_latest_token_per_agent(notebook);
+        }
         let vars: Variables = read_json(&dir.join("variables.json"))?;
         let blocks = persisted
             .notebooks
@@ -102,6 +124,8 @@ impl Core {
                 joins: Vec::new(),
             }),
             session_locks: Mutex::new(HashMap::new()),
+            changes: broadcast::channel(CHANGES_BUFFERED).0,
+            changes_sent: AtomicU64::new(0),
         }))
     }
 
@@ -131,6 +155,23 @@ impl Core {
 
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().expect("state lock")
+    }
+
+    pub fn subscribe(&self) -> broadcast::Receiver<Change> {
+        self.changes.subscribe()
+    }
+
+    pub fn changes_so_far(&self) -> u64 {
+        self.changes_sent.load(Ordering::SeqCst)
+    }
+
+    fn notify(&self, change: Change) {
+        self.changes_sent.fetch_add(1, Ordering::SeqCst);
+        let _ = self.changes.send(change);
+    }
+
+    pub fn notebook_file(&self, notebook: &str) -> PathBuf {
+        notebook_path(&self.dir, notebook)
     }
 
     // notebooks
@@ -168,15 +209,34 @@ impl Core {
         let mut state = self.state();
         let notebook = notebook_mut(&mut state, name)?;
         notebook.profile = profile.filter(|p| !p.is_empty());
-        self.save_state(&state)
+        self.save_state(&state)?;
+        self.notify(Change::Variables);
+        Ok(())
+    }
+
+    pub fn use_session(&self, notebook: &str, session: &str) -> Result<()> {
+        let mut state = self.state();
+        if !state.persisted.sessions.iter().any(|s| s.name == session) {
+            return Err("unknown session".into());
+        }
+        let entry = notebook_mut(&mut state, notebook)?;
+        if !entry.sessions.iter().any(|s| s == session) {
+            entry.sessions.push(session.to_string());
+        }
+        self.save_state(&state)?;
+        self.notify(Change::Sessions);
+        Ok(())
     }
 
     // sessions
 
+    pub fn session_defs(&self) -> Vec<SessionDef> {
+        self.state().persisted.sessions.clone()
+    }
+
     pub async fn sessions(&self) -> Vec<(SessionDef, bool)> {
-        let defs = self.state().persisted.sessions.clone();
         let mut listed = Vec::new();
-        for def in defs {
+        for def in self.session_defs() {
             let running = self.is_running(&def.name).await;
             listed.push((def, running));
         }
@@ -201,14 +261,18 @@ impl Core {
             Some(existing) => *existing = def,
             None => state.persisted.sessions.push(def),
         }
-        self.save_state(&state)
+        self.save_state(&state)?;
+        self.notify(Change::Sessions);
+        Ok(())
     }
 
     pub async fn delete_session(&self, name: &str) -> Result<()> {
         self.stop_session(name).await;
         let mut state = self.state();
         state.persisted.sessions.retain(|s| s.name != name);
-        self.save_state(&state)
+        self.save_state(&state)?;
+        self.notify(Change::Sessions);
+        Ok(())
     }
 
     pub async fn is_running(&self, name: &str) -> bool {
@@ -217,48 +281,69 @@ impl Core {
 
     pub async fn start_session(&self, name: &str) -> Result<()> {
         let def = self.session(name).ok_or("unknown session")?;
+        let lock = self.session_lock(name);
+        let _guard = lock.lock().await;
         if self.is_running(name).await {
             self.touch(name);
             return Ok(());
         }
         self.tmux.start(name).await?;
         self.touch(name);
-        let lock = self.session_lock(name);
-        let _guard = lock.lock().await;
-        match self.run_start_sequence(&def).await {
-            Ok(()) => Ok(()),
-            Err(error) => {
-                self.stop_session(name).await;
-                Err(error)
-            }
+        let set = self.effective_variables(def.profile.as_deref(), "");
+        let started = match self.run_start_sequence(&def, &set).await {
+            Ok(()) => self.outlive_start(name).await,
+            failed => failed,
+        };
+        if let Err(error) = started {
+            let error = match self.tmux.dead_pane_output(name).await {
+                Some(last_lines) => format!("session exited at start\n{last_lines}"),
+                None => error,
+            };
+            self.stop_session(name).await;
+            return Err(vars::mask(&error, &set));
         }
+        self.notify(Change::Sessions);
+        Ok(())
     }
 
-    async fn run_start_sequence(&self, def: &SessionDef) -> Result<()> {
-        let set = self.effective_variables(def.profile.as_deref(), "");
+    async fn run_start_sequence(&self, def: &SessionDef, set: &VariableSet) -> Result<()> {
         if !def.start_command.is_empty() {
-            let command = vars::render(&def.start_command, &set)?;
+            let command = vars::render(&def.start_command, set)?;
             self.tmux.type_lines(&def.name, &command).await?;
         }
         for setup in &def.setup_commands {
-            self.run_text(def, &set, setup)
+            self.run_text(def, set, setup)
                 .await
                 .map_err(|error| format!("setup failed: {error}"))?;
         }
         Ok(())
     }
 
+    async fn outlive_start(&self, name: &str) -> Result<()> {
+        tokio::time::sleep(START_SETTLE).await;
+        if self.is_running(name).await {
+            Ok(())
+        } else {
+            Err("session exited at start".into())
+        }
+    }
+
     pub async fn stop_session(&self, name: &str) {
         self.tmux.stop(name).await;
         self.state().last_activity.remove(name);
+        self.notify(Change::Sessions);
     }
 
     pub async fn reap_idle_sessions(&self) {
         let now = Instant::now();
-        let defs = self.state().persisted.sessions.clone();
-        for def in defs {
+        for def in self.session_defs() {
+            let lock = self.session_lock(&def.name);
+            let Ok(_busy_starting_or_running) = lock.try_lock() else { continue };
             if !self.tmux.is_alive(&def.name).await {
-                self.state().last_activity.remove(&def.name);
+                let was_running = self.state().last_activity.remove(&def.name).is_some();
+                if was_running {
+                    self.stop_session(&def.name).await;
+                }
                 continue;
             }
             let last = *self
@@ -274,7 +359,7 @@ impl Core {
         }
     }
 
-    pub fn propose_session(&self, notebook: &str, agent: &str, def: SessionDef) -> Result<SessionProposal> {
+    pub fn propose_session(&self, notebook: &str, agent: &str, def: SessionDef, why: &str) -> Result<SessionProposal> {
         if !valid_name(&def.name) {
             return Err("names use a-z, 0-9, - and _".into());
         }
@@ -285,14 +370,25 @@ impl Core {
             id: short_id(),
             by: agent.to_string(),
             notebook: notebook.to_string(),
+            why: required_why(why)?,
             def,
         };
         self.state().proposals.push(proposal.clone());
+        self.notify(Change::Proposals);
         Ok(proposal)
     }
 
     pub fn proposals(&self) -> Vec<SessionProposal> {
         self.state().proposals.clone()
+    }
+
+    pub fn notebook_proposals(&self, notebook: &str) -> Vec<SessionProposal> {
+        self.state()
+            .proposals
+            .iter()
+            .filter(|p| p.notebook == notebook)
+            .cloned()
+            .collect()
     }
 
     pub async fn approve_proposal(&self, id: &str) -> Result<()> {
@@ -302,6 +398,7 @@ impl Core {
             return Err(format!("session {name} already exists"));
         }
         self.save_session(proposal.def)?;
+        self.use_session(&proposal.notebook, &name)?;
         self.start_session(&name).await
     }
 
@@ -316,7 +413,9 @@ impl Core {
             .iter()
             .position(|p| p.id == id)
             .ok_or("unknown proposal")?;
-        Ok(state.proposals.remove(position))
+        let proposal = state.proposals.remove(position);
+        self.notify(Change::Proposals);
+        Ok(proposal)
     }
 
     // variables
@@ -387,6 +486,22 @@ impl Core {
     }
 
     pub fn add_block(self: &Arc<Self>, notebook: &str, session: &str, code: &str, author: &str) -> Result<Block> {
+        self.insert_block(notebook, session, code, author, None)
+    }
+
+    pub fn propose_block(self: &Arc<Self>, notebook: &str, session: &str, code: &str, agent: &str, why: &str) -> Result<Block> {
+        let why = required_why(why)?;
+        self.insert_block(notebook, session, code, agent, Some(why))
+    }
+
+    fn insert_block(
+        self: &Arc<Self>,
+        notebook: &str,
+        session: &str,
+        code: &str,
+        author: &str,
+        why: Option<String>,
+    ) -> Result<Block> {
         let mut state = self.state();
         let policy = state
             .persisted
@@ -396,10 +511,12 @@ impl Core {
             .map(|s| s.run_policy)
             .ok_or("unknown session")?;
         let entry = notebook_mut(&mut state, notebook)?;
-        if !entry.sessions.iter().any(|s| s == session) {
+        let first_use = !entry.sessions.iter().any(|s| s == session);
+        if first_use {
             entry.sessions.push(session.to_string());
         }
         let mut block = Block::new(notebook, session, &normalize_newlines(code), author);
+        block.why = why;
         let auto = block.proposed_by_agent() && policy == Policy::Auto;
         if auto {
             block.state = BlockState::Queued;
@@ -408,6 +525,13 @@ impl Core {
         self.save_state(&state)?;
         self.save_notebook(&state, notebook)?;
         drop(state);
+        self.notify(Change::BlockAdded {
+            notebook: notebook.to_string(),
+            id: block.id.clone(),
+        });
+        if first_use {
+            self.notify(Change::Sessions);
+        }
         if auto {
             self.spawn_execution(&block.id);
         }
@@ -429,6 +553,7 @@ impl Core {
         let notebook = block.notebook.clone();
         self.save_notebook(&state, &notebook)?;
         drop(state);
+        self.notify_block(&notebook, id);
         self.spawn_execution(id);
         Ok(())
     }
@@ -442,13 +567,30 @@ impl Core {
         block.state = BlockState::Rejected;
         block.note = note.filter(|n| !n.trim().is_empty());
         let notebook = block.notebook.clone();
-        self.save_notebook(&state, &notebook)
+        self.save_notebook(&state, &notebook)?;
+        drop(state);
+        self.notify_block(&notebook, id);
+        Ok(())
     }
 
     pub fn decide_read(&self, id: &str, decision: ReadDecision) -> Result<()> {
         let mut state = self.state();
-        block_mut(&mut state, id)?.read = decision;
+        let block = block_mut(&mut state, id)?;
+        if block.output.is_none() {
+            return Err("block has no output yet".into());
+        }
+        block.read = decision;
+        let notebook = block.notebook.clone();
+        drop(state);
+        self.notify_block(&notebook, id);
         Ok(())
+    }
+
+    fn notify_block(&self, notebook: &str, id: &str) {
+        self.notify(Change::Block {
+            notebook: notebook.to_string(),
+            id: id.to_string(),
+        });
     }
 
     fn spawn_execution(self: &Arc<Self>, id: &str) {
@@ -492,12 +634,18 @@ impl Core {
         if read_policy == Some(Policy::Auto) && block.proposed_by_agent() {
             block.read = ReadDecision::Released;
         }
+        let notebook = block.notebook.clone();
+        drop(state);
+        self.notify_block(&notebook, id);
     }
 
     fn set_block_state(&self, id: &str, new_state: BlockState) {
-        if let Ok(block) = block_mut(&mut self.state(), id) {
-            block.state = new_state;
-        }
+        let mut state = self.state();
+        let Ok(block) = block_mut(&mut state, id) else { return };
+        block.state = new_state;
+        let notebook = block.notebook.clone();
+        drop(state);
+        self.notify_block(&notebook, id);
     }
 
     async fn run_text(&self, def: &SessionDef, set: &VariableSet, code: &str) -> Result<String> {
@@ -506,28 +654,36 @@ impl Core {
         }
         let rendered = vars::render(code, set)?;
         let marker = Marker::new();
+        let typed = marker.command(&def.marker_template);
         let offset = self.tmux.log_len(&def.name);
         self.tmux.type_lines(&def.name, &rendered).await?;
-        self.tmux
-            .type_lines(&def.name, &marker.command(&def.marker_template))
-            .await?;
+        self.tmux.type_lines(&def.name, &typed).await?;
         self.touch(&def.name);
         let deadline = Instant::now() + self.block_timeout;
+        let mut next_liveness_check = Instant::now() + LIVENESS_CHECK;
         loop {
             self.touch(&def.name);
             let text = self.tmux.log_since(&def.name, offset);
             if let Some(end) = text.find(&marker.full()) {
                 self.touch(&def.name);
-                return Ok(vars::mask(&clean_output(&text[..end], &marker), set));
+                let output = clean_output(&text[..end], &marker, &typed, Ended::AtTheMarker);
+                return Ok(vars::mask(&output, set));
+            }
+            if Instant::now() >= next_liveness_check {
+                if !self.is_running(&def.name).await {
+                    let partial = clean_output(&text, &marker, &typed, Ended::Early);
+                    return Err(format!("session {} exited\n{partial}", def.name));
+                }
+                next_liveness_check = Instant::now() + LIVENESS_CHECK;
             }
             if Instant::now() >= deadline {
-                let partial = clean_output(&text, &marker);
+                let partial = clean_output(&text, &marker, &typed, Ended::Early);
                 return Err(format!(
                     "no end marker after {}s, the session may still be busy\n{partial}",
                     self.block_timeout.as_secs()
                 ));
             }
-            tokio::time::sleep(Duration::from_millis(100)).await;
+            tokio::time::sleep(OUTPUT_POLL).await;
         }
     }
 
@@ -575,6 +731,10 @@ impl Core {
                 };
                 let outcome = self.pending_outcome(notebook, &join.id);
                 state.joins.push(join);
+                drop(state);
+                self.notify(Change::Agents {
+                    notebook: notebook.to_string(),
+                });
                 Ok(outcome)
             }
         }
@@ -605,16 +765,27 @@ impl Core {
         let token = secret_token();
         join.status = JoinStatus::Approved { token: token.clone() };
         let (notebook, agent) = (join.notebook.clone(), join.agent.clone());
-        notebook_mut(&mut state, &notebook)?.tokens.push(NotebookToken {
+        let entry = notebook_mut(&mut state, &notebook)?;
+        entry.tokens.retain(|t| t.agent != agent);
+        entry.tokens.push(NotebookToken {
             id: short_id(),
             agent,
             hash: hash_token(&token),
         });
-        self.save_state(&state)
+        self.save_state(&state)?;
+        drop(state);
+        self.notify(Change::Agents { notebook });
+        Ok(())
     }
 
     pub fn deny_join(&self, id: &str) -> Result<()> {
-        self.state().joins.retain(|j| j.id != id);
+        let mut state = self.state();
+        let notebook = state.joins.iter().find(|j| j.id == id).map(|j| j.notebook.clone());
+        state.joins.retain(|j| j.id != id);
+        drop(state);
+        if let Some(notebook) = notebook {
+            self.notify(Change::Agents { notebook });
+        }
         Ok(())
     }
 
@@ -623,7 +794,20 @@ impl Core {
         notebook_mut(&mut state, notebook)?
             .tokens
             .retain(|t| t.id != token_id);
-        self.save_state(&state)
+        self.save_state(&state)?;
+        drop(state);
+        self.notify(Change::Agents {
+            notebook: notebook.to_string(),
+        });
+        Ok(())
+    }
+
+    pub fn join_notebook_of(&self, join_id: &str) -> Option<String> {
+        self.state()
+            .joins
+            .iter()
+            .find(|j| j.id == join_id)
+            .map(|j| j.notebook.clone())
     }
 
     pub fn admit(&self, token: &str) -> Option<Admission> {
@@ -667,7 +851,9 @@ impl Core {
     }
 
     fn save_vars(&self, state: &State) -> Result<()> {
-        write_json(&self.dir.join("variables.json"), &state.vars)
+        write_json(&self.dir.join("variables.json"), &state.vars)?;
+        self.notify(Change::Variables);
+        Ok(())
     }
 
     fn save_notebook(&self, state: &State, notebook: &str) -> Result<()> {
@@ -690,12 +876,37 @@ pub enum VariableScope {
     Notebook(String),
 }
 
-fn clean_output(raw: &str, marker: &Marker) -> String {
-    strip_terminal_escapes(raw)
-        .lines()
-        .filter(|line| !line.contains(&marker.head))
+enum Ended {
+    AtTheMarker,
+    Early,
+}
+
+fn clean_output(raw: &str, marker: &Marker, typed: &str, ended: Ended) -> String {
+    let text = strip_terminal_escapes(raw);
+    let lines: Vec<&str> = text.lines().collect();
+    let echoed_after_the_prompt = match ended {
+        Ended::AtTheMarker => lines.iter().rposition(|line| line.contains(&marker.head)),
+        Ended::Early => None,
+    };
+    lines
+        .iter()
+        .enumerate()
+        .filter_map(|(index, line)| {
+            if Some(index) == echoed_after_the_prompt {
+                return None;
+            }
+            without_typed_ahead_echo(line, typed).filter(|line| !line.contains(&marker.head))
+        })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn without_typed_ahead_echo<'a>(line: &'a str, typed: &str) -> Option<Cow<'a, str>> {
+    if !line.contains(typed) {
+        return Some(Cow::Borrowed(line));
+    }
+    let output = line.replace(typed, "");
+    (!output.is_empty()).then_some(Cow::Owned(output))
 }
 
 fn notebook_mut<'a>(state: &'a mut State, name: &str) -> Result<&'a mut Notebook> {
@@ -726,10 +937,25 @@ fn load_blocks(dir: &Path, notebook: &str) -> Vec<Block> {
         .map(|saved| {
             let mut block = Block::new(notebook, &saved.session, &saved.code, &saved.author);
             block.id = saved.id;
+            block.why = saved.why;
             block.state = BlockState::Saved;
             block
         })
         .collect()
+}
+
+fn required_why(why: &str) -> Result<String> {
+    match why.trim() {
+        "" => Err("why is required: say what you want to learn and why".into()),
+        why => Ok(why.to_string()),
+    }
+}
+
+fn keep_the_latest_token_per_agent(notebook: &mut Notebook) {
+    let mut seen = std::collections::HashSet::new();
+    notebook.tokens.reverse();
+    notebook.tokens.retain(|token| seen.insert(token.agent.clone()));
+    notebook.tokens.reverse();
 }
 
 fn normalize_newlines(code: &str) -> String {
@@ -783,5 +1009,30 @@ mod tests {
             assert!(!typed.contains(&marker.full()), "{preset:?}");
             assert!(typed.contains(&marker.head) && typed.contains(&marker.tail), "{preset:?}");
         }
+    }
+
+    #[test]
+    fn output_the_typed_ahead_marker_lands_on_is_kept() {
+        let marker = Marker::new();
+        let typed = marker.command(Preset::Bash.marker_template());
+        let raw = format!(
+            "uname -s && echo checks-passed\r\n\x1b[?2004l\r{typed}Linux\r\nchecks-passed\r\n\r\n\x1b[?2004h\r\r\n\
+\x1b[1;32m[\x1b]0;me@box: ~\x07me@box:~]$\x1b[0m {typed}\r\n\x1b[?2004l\r"
+        );
+
+        let output = clean_output(&raw, &marker, &typed, Ended::AtTheMarker);
+
+        assert_eq!(output.trim_end(), "uname -s && echo checks-passed\nLinux\nchecks-passed");
+    }
+
+    #[test]
+    fn output_the_typed_ahead_marker_lands_on_is_kept_when_the_session_exits_first() {
+        let marker = Marker::new();
+        let typed = marker.command(Preset::Bash.marker_template());
+        let raw = format!("uname -s; exit\r\n\x1b[?2004l\r{typed}Linux\r\nexit\r\n");
+
+        let output = clean_output(&raw, &marker, &typed, Ended::Early);
+
+        assert_eq!(output.trim_end(), "uname -s; exit\nLinux\nexit");
     }
 }

@@ -61,6 +61,8 @@ struct ProposeSessionArgs {
     start_command: Option<String>,
     /// Commands run after the start command, one per line
     setup_commands: Option<Vec<String>>,
+    /// Why you need this session, one sentence the owner reads before starting it
+    why: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -71,6 +73,8 @@ struct ProposeBlockArgs {
     session: String,
     /// Code to type into the session; use {{name}} for variables from list_variables
     code: String,
+    /// What you want to learn from this block and why, one sentence the owner reads before running it
+    why: String,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -152,10 +156,11 @@ impl Mcp {
                 args.start_command.as_deref().unwrap_or_default(),
                 &args.setup_commands.unwrap_or_default(),
             );
-            self.core.propose_session(&admission.notebook, &admission.agent, def)?;
+            self.core
+                .propose_session(&admission.notebook, &admission.agent, def, &args.why)?;
             Ok(json!({
                 "status": "proposed, waiting for the owner to start it",
-                "link": format!("{}/sessions", self.core.origin()),
+                "link": format!("{}/n/{}", self.core.origin(), admission.notebook),
             }))
         }))
     }
@@ -163,9 +168,13 @@ impl Mcp {
     #[tool(description = "Propose a block of code to run in a session. It runs only after the owner clicks Run (or the session's run policy is auto). Returns the block id and a link; tell the owner in your chat you are waiting, then end your turn.")]
     async fn propose_block(&self, Parameters(args): Parameters<ProposeBlockArgs>) -> String {
         reply(self.admit(&args.token).and_then(|admission| {
-            let block = self
-                .core
-                .add_block(&admission.notebook, &args.session, &args.code, &admission.agent)?;
+            let block = self.core.propose_block(
+                &admission.notebook,
+                &args.session,
+                &args.code,
+                &admission.agent,
+                &args.why,
+            )?;
             Ok(self.block_view(&block, 1))
         }))
     }
@@ -190,6 +199,7 @@ impl Mcp {
             "link": self.core.block_link(block),
             "session": block.session,
             "state": block.state,
+            "why": block.why,
             "code": block.code,
         });
         if let Some(original) = &block.proposed_code {
