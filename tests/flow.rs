@@ -62,6 +62,19 @@ async fn bash_block_returns_its_full_output_without_the_marker() {
 }
 
 #[tokio::test]
+async fn a_line_ending_in_a_semicolon_reaches_the_session_as_written() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+
+    let block = h.core.add_block("nb", "sh", "echo semi \\;", HUMAN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert!(done.output.unwrap().contains("\nsemi ;"));
+}
+
+#[tokio::test]
 async fn agent_block_waits_for_the_run_click_and_output_for_the_release() {
     let h = harness();
     h.core.create_notebook("nb").unwrap();
