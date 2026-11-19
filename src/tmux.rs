@@ -70,14 +70,14 @@ impl Tmux {
     }
 
     pub async fn type_lines(&self, session: &str, text: &str) -> Result<(), String> {
-        let target = exact_pane(session);
-        for line in text.replace("\r\n", "\n").split('\n') {
-            if !line.is_empty() {
-                self.run(&["send-keys", "-t", &target, "-l", "--", line]).await?;
-            }
-            self.run(&["send-keys", "-t", &target, "Enter"]).await?;
-        }
-        Ok(())
+        let each_line_and_its_enter: String = text
+            .replace("\r\n", "\n")
+            .split('\n')
+            .map(|line| format!("{line}\r"))
+            .collect();
+        self.run(&["send-keys", "-t", &exact_pane(session), "-l", "--", &each_line_and_its_enter])
+            .await
+            .map(|_| ())
     }
 
     pub fn log_len(&self, session: &str) -> usize {
