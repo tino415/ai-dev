@@ -66,9 +66,13 @@ pub fn router(app: App) -> Router {
         .route("/profiles", get(profiles_page).post(create_profile))
         .route("/profiles/{name}/var", post(set_profile_var))
         .route("/profiles/{name}/var/delete", post(delete_profile_var))
-        .route("/static/htmx-2.0.11.min.js", get(|| versioned_script(HTMX)))
-        .route("/static/htmx-ext-sse-2.2.4.js", get(|| versioned_script(HTMX_SSE)))
-        .route("/static/ai-dev.js", get(|| page_script(PAGE_SCRIPT)))
+        .route("/static/htmx-2.0.11.min.js", get(|| asset(SCRIPT, VERSIONED, HTMX.as_bytes())))
+        .route("/static/htmx-ext-sse-2.2.4.js", get(|| asset(SCRIPT, VERSIONED, HTMX_SSE.as_bytes())))
+        .route("/static/ai-dev.js", get(|| asset(SCRIPT, REVALIDATE, PAGE_SCRIPT.as_bytes())))
+        .route("/static/manifest.webmanifest", get(|| asset("application/manifest+json", REVALIDATE, MANIFEST)))
+        .route("/static/icon-192.png", get(|| asset("image/png", REVALIDATE, ICON_192)))
+        .route("/static/icon-512.png", get(|| asset("image/png", REVALIDATE, ICON_512)))
+        .route("/static/icon-maskable-512.png", get(|| asset("image/png", REVALIDATE, ICON_MASKABLE_512)))
         .route("/login", get(login_page))
         .route("/enroll", get(enroll_page))
         .route("/logout", post(logout))
@@ -102,23 +106,22 @@ async fn require_login(State(app): State<App>, request: Request, next: Next) -> 
     }
 }
 
-async fn versioned_script(source: &'static str) -> impl IntoResponse {
-    (
-        [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            (header::CACHE_CONTROL, "public, max-age=86400"),
-        ],
-        source,
-    )
-}
+const SCRIPT: &str = "text/javascript; charset=utf-8";
+const VERSIONED: &str = "public, max-age=86400";
+const REVALIDATE: &str = "no-cache";
 
-async fn page_script(source: &'static str) -> impl IntoResponse {
+const MANIFEST: &[u8] = include_bytes!("static/manifest.webmanifest");
+const ICON_192: &[u8] = include_bytes!("static/icon-192.png");
+const ICON_512: &[u8] = include_bytes!("static/icon-512.png");
+const ICON_MASKABLE_512: &[u8] = include_bytes!("static/icon-maskable-512.png");
+
+async fn asset(content_type: &'static str, cache_control: &'static str, body: &'static [u8]) -> impl IntoResponse {
     (
         [
-            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
-            (header::CACHE_CONTROL, "no-cache"),
+            (header::CONTENT_TYPE, content_type),
+            (header::CACHE_CONTROL, cache_control),
         ],
-        source,
+        body,
     )
 }
 
