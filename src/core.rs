@@ -538,6 +538,46 @@ impl Core {
         Ok(block)
     }
 
+    pub fn rerun_block(self: &Arc<Self>, id: &str) -> Result<()> {
+        let note = self.reset_for_rerun(id)?;
+        self.approve_run(id, None, note)
+    }
+
+    fn reset_for_rerun(&self, id: &str) -> Result<Option<String>> {
+        let mut state = self.state();
+        let block = block_mut(&mut state, id)?;
+        if !matches!(block.state, BlockState::Finished | BlockState::Failed) {
+            return Err("block has not finished".into());
+        }
+        block.state = BlockState::Pending;
+        block.output = None;
+        block.read = ReadDecision::Undecided;
+        Ok(block.note.clone())
+    }
+
+    pub async fn start_and_run(self: &Arc<Self>, id: &str) -> Result<()> {
+        let block = self.block(id).ok_or("unknown block")?;
+        if !matches!(block.state, BlockState::Pending | BlockState::Saved) {
+            return Err("block is not waiting for a run".into());
+        }
+        self.start_session(&block.session).await?;
+        self.approve_run(id, None, block.note)
+    }
+
+    pub fn cancel_start(&self, id: &str) -> Result<()> {
+        self.set_session_stopped(id, false)
+    }
+
+    fn set_session_stopped(&self, id: &str, stopped: bool) -> Result<()> {
+        let mut state = self.state();
+        let block = block_mut(&mut state, id)?;
+        block.session_stopped = stopped;
+        let notebook = block.notebook.clone();
+        drop(state);
+        self.notify_block(&notebook, id);
+        Ok(())
+    }
+
     pub fn approve_run(self: &Arc<Self>, id: &str, edited_code: Option<String>, note: Option<String>) -> Result<()> {
         let mut state = self.state();
         let block = block_mut(&mut state, id)?;
@@ -550,6 +590,7 @@ impl Core {
         }
         block.note = note.filter(|n| !n.trim().is_empty());
         block.state = BlockState::Queued;
+        block.session_stopped = false;
         let notebook = block.notebook.clone();
         self.save_notebook(&state, &notebook)?;
         drop(state);
@@ -604,6 +645,11 @@ impl Core {
         let Some(def) = self.session(&block.session) else {
             return self.finish_block(id, Err("session was deleted".into()), &VariableSet::new());
         };
+        if !self.is_running(&def.name).await {
+            self.set_block_state(id, BlockState::Pending);
+            let _ = self.set_session_stopped(id, true);
+            return;
+        }
         let set = self.notebook_variables(&block.notebook);
         let lock = self.session_lock(&def.name);
         let _guard = lock.lock().await;

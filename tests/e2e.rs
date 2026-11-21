@@ -435,3 +435,37 @@ async fn text_typed_into_the_page_survives_updates_from_the_server() {
     assert_eq!(read["note"], "kept note", "{read}");
     assert_never_reloaded(&ui).await;
 }
+
+#[tokio::test]
+async fn run_on_a_stopped_session_offers_to_start_it_and_a_finished_block_runs_again() {
+    let _one = ONE_BROWSER_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    let agent = Agent::of(&server);
+    create_bash_session(&ui, &server, "sh").await;
+    ui.click("form[action=\"/sessions/sh/stop\"] button").await;
+    ui.wait_until("sh shows as stopped", "document.querySelector('form[action=\"/sessions/sh/start\"]')").await;
+    open_live_notebook(&ui, &server, "nb").await;
+    let token = agent.join(&ui, "nb", "agent-a").await;
+    let id = agent.propose(&token, "echo again-$((40 + 2))", "to run twice").await;
+    let block = format!("#b-{id}");
+    ui.wait_until("the block arrived", &format!("document.querySelector('{block} button.primary')")).await;
+
+    ui.click(&format!("{block} button.primary")).await;
+    ui.wait_until("the block says the session is not running", &format!("document.querySelector('{block} .stopped')?.innerText.includes('sh is not running')"))
+        .await;
+    assert!(ui.text(&format!("{block} .state")).await.contains("proposed"));
+    ui.click(&format!("{block} button[hx-post$=\"/start-and-run\"]")).await;
+    ui.wait_until("the output shows", &format!("document.querySelector('{block} pre.out')?.innerText.includes('again-42')")).await;
+    ui.click(&format!("{block} button.ok")).await;
+    ui.wait_until("the agent read it", &format!("document.querySelector('{block} .state')?.innerText.includes('agent read')")).await;
+
+    ui.click(&format!("{block} button[hx-post$=\"/rerun\"]")).await;
+    ui.wait_until(
+        "the new output waits for read approval",
+        &format!("document.querySelector('{block} .state')?.innerText.includes('waiting for read approval') && document.querySelector('{block} pre.out')?.innerText.includes('again-42')"),
+    )
+    .await;
+    let read = agent.call("read_block", json!({ "token": token, "block_id": id })).await;
+    assert!(!read.to_string().contains("again-42"), "{read}");
+    assert_never_reloaded(&ui).await;
+}

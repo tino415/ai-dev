@@ -333,9 +333,10 @@ fn code_and_actions(block: &Block) -> String {
         return format!(
             "<textarea name=\"code\" class=\"code\" rows=\"{rows}\" spellcheck=\"false\">{code}</textarea>\
 <div class=\"actions\"><button class=\"{run_class}\" hx-post=\"/b/{id}/run\" hx-include=\"closest .block\" data-working=\"Running…\">Run</button>\
-<button class=\"no\" hx-post=\"/b/{id}/reject\" hx-include=\"closest .block\" data-working=\"Rejecting…\">Reject</button>{note}</div>",
+<button class=\"no\" hx-post=\"/b/{id}/reject\" hx-include=\"closest .block\" data-working=\"Rejecting…\">Reject</button>{note}</div>{stopped}",
             code = esc(&block.code),
             id = block.id,
+            stopped = session_stopped_line(block),
         );
     }
     let edited = block
@@ -348,7 +349,28 @@ fn code_and_actions(block: &Block) -> String {
         .as_ref()
         .map(|note| format!("<div class=\"why\">Note to the agent: {}</div>", esc(note)))
         .unwrap_or_default();
-    format!("<pre>{}</pre>{edited}{note}", code_html(&block.code))
+    let rerun = if matches!(block.state, BlockState::Finished | BlockState::Failed) {
+        format!(
+            "<div class=\"actions\"><button hx-post=\"/b/{}/rerun\" data-working=\"Running…\">Run again</button></div>",
+            block.id
+        )
+    } else {
+        String::new()
+    };
+    format!("<pre>{}</pre>{edited}{note}{rerun}", code_html(&block.code))
+}
+
+fn session_stopped_line(block: &Block) -> String {
+    if !block.session_stopped {
+        return String::new();
+    }
+    format!(
+        "<div class=\"why stopped\">Session {session} is not running</div>\
+<div class=\"actions\"><button class=\"primary\" hx-post=\"/b/{id}/start-and-run\" data-working=\"Starting…\">Start {session} and run</button>\
+<button class=\"no\" hx-post=\"/b/{id}/cancel-start\" data-working=\"…\">Cancel</button></div>",
+        session = esc(&block.session),
+        id = block.id,
+    )
 }
 
 fn output_view(block: &Block) -> String {

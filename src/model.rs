@@ -112,6 +112,7 @@ pub struct Block {
     pub note: Option<String>,
     pub output: Option<String>,
     pub read: ReadDecision,
+    pub session_stopped: bool,
 }
 
 impl Block {
@@ -128,6 +129,7 @@ impl Block {
             note: None,
             output: None,
             read: ReadDecision::Undecided,
+            session_stopped: false,
         }
     }
 

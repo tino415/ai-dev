@@ -51,6 +51,9 @@ pub fn router(app: App) -> Router {
         .route("/n/{name}/sessions/{session}/start", post(start_notebook_session))
         .route("/n/{name}/sessions/{session}/stop", post(stop_notebook_session))
         .route("/b/{id}/run", post(run_block))
+        .route("/b/{id}/rerun", post(rerun_block))
+        .route("/b/{id}/start-and-run", post(start_and_run_block))
+        .route("/b/{id}/cancel-start", post(cancel_start))
         .route("/b/{id}/reject", post(reject_block))
         .route("/b/{id}/release", post(release_block))
         .route("/b/{id}/hide", post(hide_block))
@@ -402,6 +405,25 @@ async fn answer_for_block(app: &App, headers: &HeaderMap, id: &str) -> Response 
 
 async fn run_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap, Form(form): Form<RunForm>) -> Answer {
     app.core.approve_run(&id, form.code, form.note).map_err(bad)?;
+    Ok(answer_for_block(&app, &headers, &id).await)
+}
+
+async fn rerun_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+    app.core.rerun_block(&id).map_err(bad)?;
+    Ok(answer_for_block(&app, &headers, &id).await)
+}
+
+async fn start_and_run_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+    let core = Arc::clone(&app.core);
+    let block_id = id.clone();
+    even_if_the_browser_leaves(async move { core.start_and_run(&block_id).await })
+        .await
+        .map_err(bad)?;
+    Ok(answer_for_block(&app, &headers, &id).await)
+}
+
+async fn cancel_start(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+    app.core.cancel_start(&id).map_err(bad)?;
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 
