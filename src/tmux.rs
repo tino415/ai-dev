@@ -2,9 +2,12 @@ use std::ffi::CStr;
 use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
-use std::process::Output;
+use std::process::{Output, Stdio};
 
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+
+use crate::model::short_id;
 
 const LAST_LINES_OF_A_DEAD_PANE: usize = 20;
 
@@ -73,11 +76,27 @@ impl Tmux {
         let each_line_and_its_enter: String = text
             .replace("\r\n", "\n")
             .split('\n')
-            .map(|line| format!("{line}\r"))
+            .map(|line| format!("{line}\n"))
             .collect();
-        self.run(&["send-keys", "-t", &exact_pane(session), "-l", "--", &each_line_and_its_enter])
-            .await
-            .map(|_| ())
+        self.paste_through_stdin(session, &each_line_and_its_enter).await
+    }
+
+    pub async fn send_hidden_line(&self, session: &str, line: &str) -> Result<(), String> {
+        self.paste_through_stdin(session, &format!("{line}\n")).await
+    }
+
+    pub async fn interrupt(&self, session: &str) -> Result<(), String> {
+        self.run(&["send-keys", "-t", &exact_pane(session), "C-c"]).await.map(|_| ())
+    }
+
+    async fn paste_through_stdin(&self, session: &str, text: &str) -> Result<(), String> {
+        let buffer = format!("aidev-{}", short_id());
+        self.run_with_stdin(&["load-buffer", "-b", &buffer, "-"], text).await?;
+        let pasted = self.run(&["paste-buffer", "-d", "-b", &buffer, "-t", &exact_pane(session)]).await;
+        if pasted.is_err() {
+            let _ = self.run(&["delete-buffer", "-b", &buffer]).await;
+        }
+        pasted.map(|_| ())
     }
 
     pub fn log_len(&self, session: &str) -> usize {
@@ -120,21 +139,39 @@ impl Tmux {
     }
 
     async fn run(&self, args: &[&str]) -> Result<String, String> {
-        let output: Output = Command::new("tmux")
+        let child = self.command(args).stdin(Stdio::null()).spawn().map_err(|e| format!("tmux: {e}"))?;
+        finished(args, child.wait_with_output().await)
+    }
+
+    async fn run_with_stdin(&self, args: &[&str], input: &str) -> Result<String, String> {
+        let mut child = self.command(args).stdin(Stdio::piped()).spawn().map_err(|e| format!("tmux: {e}"))?;
+        let mut stdin = child.stdin.take().expect("stdin was piped");
+        stdin.write_all(input.as_bytes()).await.map_err(|e| format!("tmux: {e}"))?;
+        drop(stdin);
+        finished(args, child.wait_with_output().await)
+    }
+
+    fn command(&self, args: &[&str]) -> Command {
+        let mut command = Command::new("tmux");
+        command
             .args(["-L", &self.socket, "-f", "/dev/null"])
             .args(args)
-            .output()
-            .await
-            .map_err(|e| format!("tmux: {e}"))?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-        } else {
-            Err(format!(
-                "tmux {}: {}",
-                args.first().copied().unwrap_or_default(),
-                String::from_utf8_lossy(&output.stderr).trim()
-            ))
-        }
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        command
+    }
+}
+
+fn finished(args: &[&str], output: std::io::Result<Output>) -> Result<String, String> {
+    let output = output.map_err(|e| format!("tmux: {e}"))?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    } else {
+        Err(format!(
+            "tmux {}: {}",
+            args.first().copied().unwrap_or_default(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ))
     }
 }
 

@@ -52,6 +52,8 @@ pub fn router(app: App) -> Router {
         .route("/n/{name}/sessions/{session}/stop", post(stop_notebook_session))
         .route("/b/{id}/run", post(run_block))
         .route("/b/{id}/rerun", post(rerun_block))
+        .route("/b/{id}/input", post(send_hidden_input))
+        .route("/b/{id}/interrupt", post(interrupt_block))
         .route("/b/{id}/start-and-run", post(start_and_run_block))
         .route("/b/{id}/cancel-start", post(cancel_start))
         .route("/b/{id}/reject", post(reject_block))
@@ -410,6 +412,26 @@ async fn run_block(State(app): State<App>, Path(id): Path<String>, headers: Head
 
 async fn rerun_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
     app.core.rerun_block(&id).map_err(bad)?;
+    Ok(answer_for_block(&app, &headers, &id).await)
+}
+
+#[derive(Deserialize)]
+struct HiddenInputForm {
+    value: String,
+}
+
+async fn send_hidden_input(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<HiddenInputForm>,
+) -> Answer {
+    app.core.send_hidden_input(&id, &form.value).await.map_err(bad)?;
+    Ok(answer_for_block(&app, &headers, &id).await)
+}
+
+async fn interrupt_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+    app.core.interrupt_block(&id).await.map_err(bad)?;
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 

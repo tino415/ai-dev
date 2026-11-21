@@ -208,11 +208,15 @@ impl Mcp {
         if let Some(note) = &block.note {
             view["note"] = json!(note);
         }
-        view["output"] = match (block.read, &block.output) {
-            (ReadDecision::Released, Some(output)) => paged(output, page),
-            (ReadDecision::Hidden, Some(_)) => json!("the owner kept the output hidden"),
-            (_, Some(_)) => json!("finished, waiting for the owner to release the output"),
-            (_, None) => Value::Null,
+        if block.hidden_input_sent {
+            view["owner_sent_hidden_input"] = json!("the owner typed hidden input, such as a password, into this block; its value is not shown");
+        }
+        view["output"] = match (block.state, block.read, &block.output) {
+            (BlockState::Queued | BlockState::Running, _, _) => Value::Null,
+            (_, ReadDecision::Released, Some(output)) => paged(output, page),
+            (_, ReadDecision::Hidden, Some(_)) => json!("the owner kept the output hidden"),
+            (_, _, Some(_)) => json!("finished, waiting for the owner to release the output"),
+            (_, _, None) => Value::Null,
         };
         view
     }

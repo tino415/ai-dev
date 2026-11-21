@@ -113,7 +113,7 @@ impl Server {
 #[tokio::test]
 async fn approving_and_releasing_endpoints_refuse_a_request_without_a_passkey_session() {
     let s = server().await;
-    for path in ["/b/x/run", "/b/x/reject", "/b/x/release", "/b/x/hide", "/joins/x/approve", "/proposals/x/start", "/sessions/x/start", "/n/x/tokens/y/revoke"] {
+    for path in ["/b/x/run", "/b/x/reject", "/b/x/release", "/b/x/hide", "/b/x/input", "/b/x/interrupt", "/joins/x/approve", "/proposals/x/start", "/sessions/x/start", "/n/x/tokens/y/revoke"] {
         let response = s.client.post(format!("{}{path}", s.base)).send().await.unwrap();
         assert_eq!(response.status(), 401, "{path}");
     }
