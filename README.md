@@ -49,6 +49,12 @@ nix develop -c cargo test
 `tests/e2e.rs` drives a headless chromium from the dev shell against the binary, started with the
 unit's narrow environment.
 
+## Icons
+
+`src/icons/*.svg` are the sources of the PNGs in `src/static/`; after changing one, render it again with
+`nix run nixpkgs#imagemagick -- -background none src/icons/icon.svg -resize 512x512 src/static/icon-512.png` (likewise for 192 and
+for `icon-maskable.svg` to `icon-maskable-512.png`).
+
 ## Data
 
 `$AI_DEV_HOME/notebooks/<name>.md` holds blocks only, never output. Variable values, including secrets,

@@ -248,3 +248,37 @@ async fn an_mcp_call_is_refused_while_the_token_file_is_missing() {
     let (status, _) = s.call_tool(Some(&s.static_token), "list_sessions", json!({})).await;
     assert_eq!(status, 401);
 }
+
+#[tokio::test]
+async fn the_manifest_and_its_icons_answer_without_a_login() {
+    let s = server().await;
+    let manifest = s.client.get(format!("{}/static/manifest.webmanifest", s.base)).send().await.unwrap();
+    assert_eq!(manifest.status(), 200);
+    assert_eq!(manifest.headers()["content-type"], "application/manifest+json");
+    let manifest: Value = manifest.json().await.unwrap();
+    let icons = manifest["icons"].as_array().unwrap();
+    let sizes: Vec<&str> = icons.iter().map(|icon| icon["sizes"].as_str().unwrap()).collect();
+    assert!(sizes.contains(&"192x192") && sizes.contains(&"512x512"), "{sizes:?}");
+    for icon in icons {
+        let response = s.client.get(format!("{}{}", s.base, icon["src"].as_str().unwrap())).send().await.unwrap();
+        assert_eq!(response.status(), 200, "{icon}");
+        assert_eq!(response.headers()["content-type"], "image/png");
+        let png = response.bytes().await.unwrap();
+        let (width, height) = (u32::from_be_bytes(png[16..20].try_into().unwrap()), u32::from_be_bytes(png[20..24].try_into().unwrap()));
+        assert_eq!(format!("{width}x{height}"), icon["sizes"], "{icon}");
+    }
+}
+
+#[tokio::test]
+async fn the_login_page_links_the_manifest_and_icons() {
+    let s = server().await;
+    let page = s.client.get(format!("{}/login", s.base)).send().await.unwrap().text().await.unwrap();
+    for tag in [
+        "<link rel=\"manifest\" href=\"/static/manifest.webmanifest\">",
+        "<meta name=\"theme-color\" content=\"#3b5bdb\" media=\"(prefers-color-scheme: light)\">",
+        "<link rel=\"icon\" href=\"/static/icon-192.png\">",
+        "<link rel=\"apple-touch-icon\" href=\"/static/icon-192.png\">",
+    ] {
+        assert!(page.contains(tag), "{tag}");
+    }
+}

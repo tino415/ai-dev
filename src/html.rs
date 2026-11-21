@@ -131,6 +131,11 @@ fn document(title: &str, body: &str) -> String {
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
 <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+<meta name=\"theme-color\" content=\"#3b5bdb\" media=\"(prefers-color-scheme: light)\">\
+<meta name=\"theme-color\" content=\"#161615\" media=\"(prefers-color-scheme: dark)\">\
+<link rel=\"manifest\" href=\"/static/manifest.webmanifest\">\
+<link rel=\"icon\" href=\"/static/icon-192.png\">\
+<link rel=\"apple-touch-icon\" href=\"/static/icon-192.png\">\
 <title>{} · ai-dev</title><style>{STYLE}</style></head><body>{body}</body></html>",
         esc(title)
     )
