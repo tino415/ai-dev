@@ -296,12 +296,13 @@ fn block_view(version: u64, block: &Block) -> String {
     };
     format!(
         "<div class=\"block {side}\" {live}><div class=\"bhead\"><span class=\"who\">{who}</span> → <b>{session}</b>\
-<span class=\"state {badge}\">{state}</span></div>{why}{body}{output}{agent_view}</div>",
+<span class=\"state {badge}\">{state}</span></div>{why}{body}{output}{hidden_input}{agent_view}</div>",
         side = if by_agent { "agent" } else { "me" },
         who = if by_agent { esc(&block.author) } else { "me".to_string() },
         session = esc(&block.session),
         body = code_and_actions(block),
         output = output_view(block),
+        hidden_input = hidden_input_form(block),
     )
 }
 
@@ -360,6 +361,19 @@ fn code_and_actions(block: &Block) -> String {
     format!("<pre>{}</pre>{edited}{note}{rerun}", code_html(&block.code))
 }
 
+fn hidden_input_form(block: &Block) -> String {
+    if block.state != BlockState::Running {
+        return String::new();
+    }
+    format!(
+        "<form class=\"actions\" hx-post=\"/b/{id}/input\" autocomplete=\"off\">\
+<input type=\"password\" name=\"value\" placeholder=\"hidden input, such as a password\" autocomplete=\"off\" required>\
+<button type=\"submit\" data-working=\"Sending…\">Send</button>\
+<button class=\"no\" type=\"button\" hx-post=\"/b/{id}/interrupt\" hx-params=\"none\" data-working=\"Interrupting…\">Interrupt</button></form>",
+        id = block.id
+    )
+}
+
 fn session_stopped_line(block: &Block) -> String {
     if !block.session_stopped {
         return String::new();
@@ -376,9 +390,16 @@ fn session_stopped_line(block: &Block) -> String {
 fn output_view(block: &Block) -> String {
     let Some(output) = &block.output else { return String::new() };
     let undecided = block.proposed_by_agent() && block.read == ReadDecision::Undecided;
-    let label = if undecided { "output (only you see it so far)" } else { "output" };
+    let running = block.state == BlockState::Running;
+    let label = match (running, undecided) {
+        (true, _) => "output so far (only you see it)",
+        (false, true) => "output (only you see it so far)",
+        (false, false) => "output",
+    };
     let failed = if block.state == BlockState::Failed { " failed" } else { "" };
-    let actions = if undecided {
+    let actions = if running {
+        String::new()
+    } else if undecided {
         format!(
             "<div class=\"actions\"><button class=\"ok\" hx-post=\"/b/{id}/release\" data-working=\"Releasing…\">Let agent read</button>\
 <button class=\"no\" hx-post=\"/b/{id}/hide\" data-working=\"Hiding…\">Keep hidden</button></div>",

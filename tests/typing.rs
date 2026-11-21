@@ -17,7 +17,7 @@ fn put_a_tmux_that_is_slow_to_press_enter_first_on_path(dir: &Path) {
     std::fs::write(
         &wrapper,
         format!(
-            "#!{}\ncase \" $* \" in *\" Enter \"*|*\"$(printf '\\r')\"*) sleep 0.15 ;; esac\nexec {} \"$@\"\n",
+            "#!{}\ncase \" $* \" in *\" paste-buffer \"*) sleep 0.15 ;; esac\nexec {} \"$@\"\n",
             on_path("sh").display(),
             real_tmux.display()
         ),

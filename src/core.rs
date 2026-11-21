@@ -20,6 +20,9 @@ const START_SETTLE: Duration = Duration::from_millis(500);
 const OUTPUT_POLL: Duration = Duration::from_millis(100);
 const LIVENESS_CHECK: Duration = Duration::from_secs(1);
 const CHANGES_BUFFERED: usize = 256;
+const HIDDEN_INPUT_SENT: &str = "‹hidden input sent›";
+const HIDDEN_INPUT_PLACEHOLDER: char = '\u{E000}';
+const PROMPT_SETTLE: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
@@ -48,6 +51,20 @@ struct State {
     last_activity: HashMap<String, Instant>,
     proposals: Vec<SessionProposal>,
     joins: Vec<JoinRequest>,
+    running: HashMap<String, RunningBlock>,
+}
+
+struct RunningBlock {
+    session: String,
+    log_offset: usize,
+    end_marker_command: String,
+    hidden_inputs: Vec<HiddenInput>,
+}
+
+#[derive(Clone)]
+struct HiddenInput {
+    sent_at: usize,
+    value: String,
 }
 
 pub struct Core {
@@ -122,6 +139,7 @@ impl Core {
                 last_activity: HashMap::new(),
                 proposals: Vec::new(),
                 joins: Vec::new(),
+                running: HashMap::new(),
             }),
             session_locks: Mutex::new(HashMap::new()),
             changes: broadcast::channel(CHANGES_BUFFERED).0,
@@ -312,7 +330,7 @@ impl Core {
             self.tmux.type_lines(&def.name, &command).await?;
         }
         for setup in &def.setup_commands {
-            self.run_text(def, set, setup)
+            self.run_text(None, def, set, setup)
                 .await
                 .map_err(|error| format!("setup failed: {error}"))?;
         }
@@ -551,6 +569,7 @@ impl Core {
         }
         block.state = BlockState::Pending;
         block.output = None;
+        block.hidden_input_sent = false;
         block.read = ReadDecision::Undecided;
         Ok(block.note.clone())
     }
@@ -617,7 +636,7 @@ impl Core {
     pub fn decide_read(&self, id: &str, decision: ReadDecision) -> Result<()> {
         let mut state = self.state();
         let block = block_mut(&mut state, id)?;
-        if block.output.is_none() {
+        if block.output.is_none() || !matches!(block.state, BlockState::Finished | BlockState::Failed) {
             return Err("block has no output yet".into());
         }
         block.read = decision;
@@ -654,8 +673,103 @@ impl Core {
         let lock = self.session_lock(&def.name);
         let _guard = lock.lock().await;
         self.set_block_state(id, BlockState::Running);
-        let result = self.run_text(&def, &set, &block.code).await;
+        let result = self.run_text(Some(id), &def, &set, &block.code).await;
+        self.state().running.remove(id);
         self.finish_block(id, result, &set);
+    }
+
+    pub async fn send_hidden_input(&self, id: &str, value: &str) -> Result<()> {
+        if value.contains(['\n', '\r']) {
+            return Err("hidden input is a single line".into());
+        }
+        let session = self.remember_hidden_input(id, value)?;
+        if let Err(error) = self.tmux.send_hidden_line(&session, value).await {
+            self.forget_last_hidden_input(id);
+            return Err(error);
+        }
+        self.retype_end_marker(id, &session).await;
+        self.notify_running_block(id);
+        Ok(())
+    }
+
+    pub async fn interrupt_block(&self, id: &str) -> Result<()> {
+        let session = self.running_session(id)?;
+        self.tmux.interrupt(&session).await?;
+        self.retype_end_marker(id, &session).await;
+        Ok(())
+    }
+
+    fn running_session(&self, id: &str) -> Result<String> {
+        let state = self.state();
+        let running = state.running.get(id).ok_or("block is not running")?;
+        Ok(running.session.clone())
+    }
+
+    fn remember_hidden_input(&self, id: &str, value: &str) -> Result<String> {
+        let mut state = self.state();
+        let running = state.running.get_mut(id).ok_or("block is not running")?;
+        let sent_at = self.tmux.log_len(&running.session).saturating_sub(running.log_offset);
+        running.hidden_inputs.push(HiddenInput { sent_at, value: value.to_string() });
+        let session = running.session.clone();
+        block_mut(&mut state, id)?.hidden_input_sent = true;
+        Ok(session)
+    }
+
+    fn forget_last_hidden_input(&self, id: &str) {
+        let mut state = self.state();
+        let Some(running) = state.running.get_mut(id) else { return };
+        running.hidden_inputs.pop();
+        let none_left = running.hidden_inputs.is_empty();
+        if let (true, Ok(block)) = (none_left, block_mut(&mut state, id)) {
+            block.hidden_input_sent = false;
+        }
+    }
+
+    async fn retype_end_marker(&self, id: &str, session: &str) {
+        tokio::time::sleep(PROMPT_SETTLE).await;
+        let command = self.state().running.get(id).map(|running| running.end_marker_command.clone());
+        if let Some(command) = command {
+            let _ = self.tmux.type_lines(session, &command).await;
+        }
+    }
+
+    fn notify_running_block(&self, id: &str) {
+        if let Some(block) = self.block(id) {
+            self.notify_block(&block.notebook, id);
+        }
+    }
+
+    fn publish_output_so_far(&self, id: &str, output: String) {
+        let mut state = self.state();
+        let Ok(block) = block_mut(&mut state, id) else { return };
+        if block.state != BlockState::Running || block.output.as_deref() == Some(&output) {
+            return;
+        }
+        block.output = Some(output);
+        let notebook = block.notebook.clone();
+        drop(state);
+        self.notify_block(&notebook, id);
+    }
+
+    fn with_hidden_inputs_masked(&self, id: Option<&str>, raw: &str, clean: impl FnOnce(&str) -> String) -> String {
+        let hidden: Vec<(usize, String)> = id
+            .and_then(|id| self.state().running.get(id).map(|running| running.hidden_inputs.clone()))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|input| (input.sent_at, input.value))
+            .collect();
+        let mut marked = raw.to_string();
+        for (sent_at, _) in hidden.iter().rev() {
+            if marked.is_char_boundary(*sent_at) {
+                marked.insert(*sent_at, HIDDEN_INPUT_PLACEHOLDER);
+            }
+        }
+        let mut values: Vec<&str> = hidden.iter().map(|(_, value)| value.as_str()).filter(|v| !v.is_empty()).collect();
+        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+        values
+            .into_iter()
+            .fold(clean(&marked), |masked, value| masked.replace(value, "***"))
+            .replace(HIDDEN_INPUT_PLACEHOLDER, HIDDEN_INPUT_SENT)
     }
 
     fn finish_block(&self, id: &str, result: Result<String>, set: &VariableSet) {
@@ -694,7 +808,7 @@ impl Core {
         self.notify_block(&notebook, id);
     }
 
-    async fn run_text(&self, def: &SessionDef, set: &VariableSet, code: &str) -> Result<String> {
+    async fn run_text(&self, block_id: Option<&str>, def: &SessionDef, set: &VariableSet, code: &str) -> Result<String> {
         if !self.is_running(&def.name).await {
             return Err(format!("session {} is not running", def.name));
         }
@@ -702,6 +816,17 @@ impl Core {
         let marker = Marker::new();
         let typed = marker.command(&def.marker_template);
         let offset = self.tmux.log_len(&def.name);
+        if let Some(id) = block_id {
+            self.state().running.insert(
+                id.to_string(),
+                RunningBlock {
+                    session: def.name.clone(),
+                    log_offset: offset,
+                    end_marker_command: typed.clone(),
+                    hidden_inputs: Vec::new(),
+                },
+            );
+        }
         self.tmux.type_lines(&def.name, &rendered).await?;
         self.tmux.type_lines(&def.name, &typed).await?;
         self.touch(&def.name);
@@ -712,22 +837,33 @@ impl Core {
             let text = self.tmux.log_since(&def.name, offset);
             if let Some(end) = text.find(&marker.full()) {
                 self.touch(&def.name);
-                let output = clean_output(&text[..end], &marker, &typed, Ended::AtTheMarker);
+                let output = self.with_hidden_inputs_masked(block_id, &text[..end], |raw| {
+                    clean_output(raw, &marker, &typed, Ended::AtTheMarker)
+                });
+                if let Some(id) = block_id {
+                    self.state().running.remove(id);
+                }
                 return Ok(vars::mask(&output, set));
             }
+            let output_so_far = || {
+                self.with_hidden_inputs_masked(block_id, &text, |raw| clean_output(raw, &marker, &typed, Ended::Early))
+            };
             if Instant::now() >= next_liveness_check {
                 if !self.is_running(&def.name).await {
-                    let partial = clean_output(&text, &marker, &typed, Ended::Early);
-                    return Err(format!("session {} exited\n{partial}", def.name));
+                    return Err(format!("session {} exited\n{}", def.name, output_so_far()));
                 }
                 next_liveness_check = Instant::now() + LIVENESS_CHECK;
             }
             if Instant::now() >= deadline {
-                let partial = clean_output(&text, &marker, &typed, Ended::Early);
                 return Err(format!(
-                    "no end marker after {}s, the session may still be busy\n{partial}",
-                    self.block_timeout.as_secs()
+                    "no end marker after {}s, the session may still be busy\n{}",
+                    self.block_timeout.as_secs(),
+                    output_so_far()
                 ));
+            }
+            let so_far = vars::mask(&output_so_far(), set);
+            if let (Some(id), false) = (block_id, so_far.trim().is_empty()) {
+                self.publish_output_so_far(id, so_far);
             }
             tokio::time::sleep(OUTPUT_POLL).await;
         }

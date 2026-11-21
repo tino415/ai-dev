@@ -113,6 +113,7 @@ pub struct Block {
     pub output: Option<String>,
     pub read: ReadDecision,
     pub session_stopped: bool,
+    pub hidden_input_sent: bool,
 }
 
 impl Block {
@@ -130,6 +131,7 @@ impl Block {
             output: None,
             read: ReadDecision::Undecided,
             session_stopped: false,
+            hidden_input_sent: false,
         }
     }
 

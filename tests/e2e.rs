@@ -469,3 +469,35 @@ async fn run_on_a_stopped_session_offers_to_start_it_and_a_finished_block_runs_a
     assert!(!read.to_string().contains("again-42"), "{read}");
     assert_never_reloaded(&ui).await;
 }
+
+#[tokio::test]
+async fn a_running_block_takes_hidden_input_from_the_page_and_can_be_interrupted() {
+    let _one = ONE_BROWSER_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    let agent = Agent::of(&server);
+    create_bash_session(&ui, &server, "sh").await;
+    open_live_notebook(&ui, &server, "nb").await;
+    let token = agent.join(&ui, "nb", "agent-a").await;
+    let asks = r#"perl -MPOSIX -e '$t = POSIX::Termios->new; $t->getattr(0); $t->setlflag($t->getlflag & ~ECHO); $t->setattr(0, TCSAFLUSH); print "password: "; $p = <STDIN>; chomp $p; print "\ngot ", length($p), " characters\n"'"#;
+    let first = agent.propose(&token, asks, "needs a password").await;
+    let second = agent.propose(&token, asks, "needs a password again").await;
+    let (first, second) = (format!("#b-{first}"), format!("#b-{second}"));
+    ui.wait_until("the blocks arrived", &format!("document.querySelector('{second} button.primary')")).await;
+
+    ui.click(&format!("{first} button.primary")).await;
+    ui.wait_until("the prompt shows", &format!("document.querySelector('{first} pre.out')?.innerText.includes('password:')")).await;
+    ui.type_at_end(&format!("{first} input[type=password]"), "correct horse battery").await;
+    ui.click(&format!("{first} form button[type=submit]")).await;
+    ui.wait_until(
+        "the block finished with the value hidden",
+        &format!("document.querySelector('{first} pre.out')?.innerText.includes('got 21 characters') && document.querySelector('{first} pre.out').innerText.includes('hidden input sent')"),
+    )
+    .await;
+    assert!(!ui.text(&first).await.contains("correct horse"));
+
+    ui.click(&format!("{second} button.primary")).await;
+    ui.wait_until("the second prompt shows", &format!("document.querySelector('{second} pre.out')?.innerText.includes('password:')")).await;
+    ui.click(&format!("{second} button[hx-post$=\"/interrupt\"]")).await;
+    ui.wait_until("the interrupted block ended", &format!("document.querySelector('{second} .state')?.innerText.includes('waiting for read approval')")).await;
+    assert_never_reloaded(&ui).await;
+}

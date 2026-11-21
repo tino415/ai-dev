@@ -63,4 +63,19 @@ agents see only their names. Masking matches only the literal value, so a block 
 (`echo {{pw}} | base64`) prints something it cannot mask: keep the read policy at `ask` for sessions
 that use secrets. The raw terminal log in `runtime/` (mode 0600) holds typed secrets until the session stops.
 
+## Hidden input
+
+A running block shows its output so far, to you only, with a masked field and `Send`. `Send` types the field's
+text and Enter into the block's session, for a `sudo` password, an ssh passphrase or a `psql` prompt. The value is
+never stored or logged and is masked in the output; the output shows `‹hidden input sent›` where it went, and
+`read_block` says hidden input was sent, never the value. A program that echoes it puts it in the raw terminal
+log in `runtime/` like any typed text. `Interrupt` sends Ctrl-C. Only a passkey session can do either; the MCP
+endpoint has no such tool. `sudo`'s own credential cache is left alone, so later blocks in that session within
+its timeout run `sudo` without asking. A prompt not answered within the block timeout fails the block, and
+`Run again` retries it.
+
+Block text and hidden input reach tmux through stdin (`load-buffer`, `paste-buffer -d`), never as arguments, so
+`ps` shows neither. After hidden input or an interrupt the block's end marker is typed again, because a prompt
+that reads the terminal discards what was typed ahead.
+
 A notebook reopened after a restart shows its blocks as `saved`: they hold code only and need a click to run again.
