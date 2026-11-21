@@ -364,3 +364,100 @@ async fn the_composer_keeps_the_session_i_last_ran_in_after_a_sessions_change() 
 
     assert!(composer.contains("<option selected>second</option>"), "{composer}");
 }
+
+async fn stopped_bash_session(core: &Arc<Core>, name: &str) {
+    bash_session(core, name).await;
+    core.stop_session(name).await;
+}
+
+#[tokio::test]
+async fn run_on_a_stopped_session_leaves_the_block_proposed() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    stopped_bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo hi", "agent-a").unwrap();
+
+    h.core.approve_run(&block.id, Some("echo edited".into()), Some("use this".into())).unwrap();
+    let after = wait_for_stopped_line(&h.core, &block.id).await;
+
+    assert_eq!(after.state, BlockState::Pending);
+    assert_eq!(after.code, "echo edited");
+    assert_eq!(after.note.as_deref(), Some("use this"));
+    assert!(after.output.is_none());
+}
+
+async fn wait_for_stopped_line(core: &Core, id: &str) -> Block {
+    for _ in 0..200 {
+        let block = core.block(id).unwrap();
+        if block.session_stopped {
+            return block;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("block {id} never showed the stopped session: {:?}", core.block(id));
+}
+
+#[tokio::test]
+async fn start_and_run_starts_the_session_and_finishes_the_block() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    stopped_bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo started-for-you", HUMAN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    wait_for_stopped_line(&h.core, &block.id).await;
+
+    h.core.start_and_run(&block.id).await.unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert!(done.output.unwrap().contains("started-for-you"));
+    assert!(!done.session_stopped);
+}
+
+#[tokio::test]
+async fn a_failed_block_run_again_finishes_with_new_output_in_the_same_block() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo {{later}}-second-time", HUMAN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    wait_for(&h.core, &block.id, BlockState::Failed).await;
+    let scope = ai_dev::core::VariableScope::Notebook("nb".into());
+    h.core.set_variable(scope, "later", "now", false).unwrap();
+
+    h.core.rerun_block(&block.id).unwrap();
+    let again = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert!(again.output.unwrap().contains("now-second-time"));
+    assert_eq!(h.core.blocks("nb").len(), 1);
+}
+
+#[tokio::test]
+async fn run_again_on_an_agents_block_waits_for_read_approval_again() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo one", "agent-a").unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    wait_for(&h.core, &block.id, BlockState::Finished).await;
+    h.core.decide_read(&block.id, ReadDecision::Released).unwrap();
+
+    h.core.rerun_block(&block.id).unwrap();
+    let again = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert_eq!(again.read, ReadDecision::Undecided);
+}
+
+#[tokio::test]
+async fn an_auto_run_proposal_on_a_stopped_session_stays_proposed() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    let mut def = SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &[]);
+    def.run_policy = Policy::Auto;
+    h.core.save_session(def).unwrap();
+
+    let block = h.core.propose_block("nb", "sh", "echo nope", "agent-a", "why").unwrap();
+    let waiting = wait_for(&h.core, &block.id, BlockState::Pending).await;
+
+    assert!(waiting.session_stopped);
+    assert!(waiting.output.is_none());
+}
