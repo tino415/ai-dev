@@ -46,12 +46,11 @@ async fn an_enter_that_reaches_a_busy_session_late_adds_no_blank_line_to_the_out
     put_a_tmux_that_is_slow_to_press_enter_first_on_path(bin.path());
     let dir = tempfile::tempdir().unwrap();
     let server = TmuxServer(format!("aidev-test-{}", short_id()));
-    let core = Core::open(dir.path(), "http://localhost:7471", &server.0)
-        .unwrap()
-        .with_block_timeout(Duration::from_secs(20));
+    let core = Core::open(dir.path(), "http://localhost:7471", &server.0).unwrap();
     core.create_notebook("nb").unwrap();
-    core.save_session(SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &[]))
-        .unwrap();
+    let mut def = SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &[]);
+    def.block_timeout_secs = Some(20);
+    core.save_session(def).unwrap();
     core.start_session("sh").await.unwrap();
 
     let block = core

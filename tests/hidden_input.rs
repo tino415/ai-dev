@@ -22,12 +22,11 @@ impl Drop for Harness {
 async fn harness_with_bash_session() -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let socket = format!("aidev-test-{}", short_id());
-    let core = Core::open(dir.path(), "http://localhost:7471", &socket)
-        .unwrap()
-        .with_block_timeout(Duration::from_secs(20));
+    let core = Core::open(dir.path(), "http://localhost:7471", &socket).unwrap();
     core.create_notebook("nb").unwrap();
-    core.save_session(SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &[]))
-        .unwrap();
+    let mut def = SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &[]);
+    def.block_timeout_secs = Some(20);
+    core.save_session(def).unwrap();
     core.start_session("sh").await.unwrap();
     Harness { dir, core, socket }
 }

@@ -26,7 +26,36 @@ pub fn serialize(notebook: &str, blocks: &[Block]) -> String {
     text
 }
 
-pub fn parse(text: &str) -> Vec<SavedBlock> {
+#[derive(Debug, PartialEq, Eq)]
+pub enum FileError {
+    BlockWithoutId,
+    RepeatedId(String),
+}
+
+impl FileError {
+    pub fn message(&self, notebook: &str) -> String {
+        match self {
+            FileError::BlockWithoutId => format!("{notebook}.md: a block has no id"),
+            FileError::RepeatedId(id) => format!("{notebook}.md: block id {id} is used twice"),
+        }
+    }
+}
+
+pub fn parse(text: &str) -> Result<Vec<SavedBlock>, FileError> {
+    let blocks = parse_blocks(text);
+    let mut seen = std::collections::HashSet::new();
+    for block in &blocks {
+        if block.id.is_empty() {
+            return Err(FileError::BlockWithoutId);
+        }
+        if !seen.insert(block.id.as_str()) {
+            return Err(FileError::RepeatedId(block.id.clone()));
+        }
+    }
+    Ok(blocks)
+}
+
+fn parse_blocks(text: &str) -> Vec<SavedBlock> {
     let mut blocks = Vec::new();
     let mut lines = text.lines();
     let mut why = None;
@@ -77,7 +106,7 @@ mod tests {
     fn round_trips_blocks_including_fences_in_code() {
         let mut block = Block::new("nb", "prod", "echo '```'\nls", "claude-1");
         block.id = "abc".into();
-        let parsed = parse(&serialize("nb", &[block]));
+        let parsed = parse(&serialize("nb", &[block])).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].code, "echo '```'\nls");
         assert_eq!((parsed[0].session.as_str(), parsed[0].author.as_str(), parsed[0].id.as_str()), ("prod", "claude-1", "abc"));
@@ -95,14 +124,26 @@ mod tests {
         let mut explained = Block::new("nb", "prod", "ls", "claude-1");
         explained.why = Some("check the\nlogs".into());
         let plain = Block::new("nb", "prod", "pwd", "human");
-        let parsed = parse(&serialize("nb", &[explained, plain]));
+        let parsed = parse(&serialize("nb", &[explained, plain])).unwrap();
         assert_eq!(parsed[0].why.as_deref(), Some("check the logs"));
         assert_eq!(parsed[1].why, None);
     }
 
     #[test]
     fn loads_a_file_written_before_blocks_had_a_why() {
-        let parsed = parse("# nb\n\n```sh session=prod author=human id=abc\nls\n```\n");
+        let parsed = parse("# nb\n\n```sh session=prod author=human id=abc\nls\n```\n").unwrap();
         assert_eq!((parsed[0].code.as_str(), parsed[0].why.as_deref()), ("ls", None));
+    }
+
+    #[test]
+    fn a_block_without_an_id_is_an_error() {
+        let error = parse("# nb\n\n```sh session=prod author=human\nls\n```\n").err().unwrap();
+        assert_eq!(error.message("nb"), "nb.md: a block has no id");
+    }
+
+    #[test]
+    fn an_id_used_twice_is_an_error() {
+        let text = "# nb\n\n```sh session=prod author=human id=abc\nls\n```\n\n```sh session=prod author=human id=abc\npwd\n```\n";
+        assert_eq!(parse(text).err().unwrap().message("nb"), "nb.md: block id abc is used twice");
     }
 }

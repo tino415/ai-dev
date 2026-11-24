@@ -5,7 +5,9 @@ you approve the run in the web UI, and you decide whether the agent may read the
 
 Sessions are tmux sessions on a private tmux server (`tmux -L ai-dev`), so you can attach from a terminal.
 A block ends at a unique marker the tool types after your code; the typed marker never contains
-itself, so the terminal echo cannot end a block early.
+itself, so the terminal echo cannot end a block early. A block that shows no marker within its session's
+block seconds (120 by default, set on the Sessions page) fails; with block seconds empty it runs until its
+marker, an Interrupt, or the end of its session.
 
 ## Run
 
@@ -57,7 +59,17 @@ for `icon-maskable.svg` to `icon-maskable-512.png`).
 
 ## Data
 
-`$AI_DEV_HOME/notebooks/<name>.md` holds blocks only, never output. Variable values, including secrets,
+`$AI_DEV_HOME/notebooks/<name>.md` holds blocks only, never output. The file may change on disk, for example
+from git: ai-dev compares it with the text it last read or wrote when the notebook page opens and before every
+write. A press (Run, Run again, Start and run, a new block, Reject, Delete) that finds it changed loads it and
+does nothing else: `<name>.md changed on disk. It was loaded again and nothing ran.` Blocks are matched by id
+and follow the file's order; a block whose code, session and why did not change keeps its state and output,
+one whose text changed becomes saved, one the file no longer has leaves the page, and a queued or running
+block keeps running. A file with a block that has no id, or an id used twice, is not loaded: the notebook
+keeps its blocks and ai-dev does not write that file until it is fixed. Creating a notebook whose file exists
+loads that file.
+
+Variable values, including secrets,
 are in `variables.json` (mode 0600). Secret values are filled in when a block runs and masked in output;
 agents see only their names. Masking matches only the literal value, so a block that transforms a secret
 (`echo {{pw}} | base64`) prints something it cannot mask: keep the read policy at `ask` for sessions
@@ -71,7 +83,7 @@ never stored or logged and is masked in the output; the output shows `‹hidden 
 `read_block` says hidden input was sent, never the value. A program that echoes it puts it in the raw terminal
 log in `runtime/` like any typed text. `Interrupt` sends Ctrl-C. Only a passkey session can do either; the MCP
 endpoint has no such tool. `sudo`'s own credential cache is left alone, so later blocks in that session within
-its timeout run `sudo` without asking. A prompt not answered within the block timeout fails the block, and
+its timeout run `sudo` without asking. A prompt not answered within the session's block seconds fails the block, and
 `Run again` retries it.
 
 Block text and hidden input reach tmux through stdin (`load-buffer`, `paste-buffer -d`), never as arguments, so

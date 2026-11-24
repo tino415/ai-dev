@@ -42,6 +42,11 @@ impl Preset {
 }
 
 pub const DEFAULT_IDLE_TIMEOUT_SECS: u64 = 30 * 60;
+pub const DEFAULT_BLOCK_TIMEOUT_SECS: u64 = 120;
+
+fn default_block_timeout() -> Option<u64> {
+    Some(DEFAULT_BLOCK_TIMEOUT_SECS)
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SessionDef {
@@ -53,6 +58,8 @@ pub struct SessionDef {
     pub run_policy: Policy,
     pub read_policy: Policy,
     pub idle_timeout_secs: u64,
+    #[serde(default = "default_block_timeout")]
+    pub block_timeout_secs: Option<u64>,
 }
 
 impl SessionDef {
@@ -66,6 +73,7 @@ impl SessionDef {
             run_policy: Policy::Ask,
             read_policy: Policy::Ask,
             idle_timeout_secs: DEFAULT_IDLE_TIMEOUT_SECS,
+            block_timeout_secs: default_block_timeout(),
         }
     }
 }
@@ -144,6 +152,10 @@ impl Block {
 
     pub fn proposed_by_agent(&self) -> bool {
         self.author != HUMAN
+    }
+
+    pub fn has_the_text_of(&self, other: &Block) -> bool {
+        (&self.code, &self.session, &self.why, &self.author) == (&other.code, &other.session, &other.why, &other.author)
     }
 }
 

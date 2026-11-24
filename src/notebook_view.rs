@@ -14,11 +14,15 @@ pub enum Part {
 pub async fn layout(core: &Core, notebook: &str) -> String {
     let version = core.changes_so_far();
     let blocks: String = core.blocks(notebook).iter().map(|block| block_view(version, block)).collect();
+    let file_error = core
+        .notebook_file_error(notebook)
+        .map(|error| format!("<p class=\"why stopped\">{}</p>", esc(&error)))
+        .unwrap_or_default();
     format!(
         "<div class=\"layout\" hx-ext=\"sse\" sse-connect=\"/n/{n}/events?since={version}\"><aside>{sessions}{variables}{agents}</aside>\
 <main><p class=\"note\">Blue edge: an agent wrote it. Green edge: you wrote it. Nothing reaches a session before Run, \
 and no output reaches an agent before \"Let agent read\", unless the session's policy says auto.</p>\
-<div hidden data-stale sse-swap=\"stale\" hx-swap=\"none\"></div>{proposals}\
+<div hidden data-stale sse-swap=\"stale\" hx-swap=\"none\"></div>{file_error}{proposals}\
 <div id=\"blocks\" data-append sse-swap=\"block-added\" hx-target=\"this\" hx-swap=\"beforeend\">{blocks}</div>{composer}</main></div>",
         n = esc(notebook),
         sessions = render(core, notebook, Part::Sessions).await,
