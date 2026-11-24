@@ -461,3 +461,37 @@ async fn an_auto_run_proposal_on_a_stopped_session_stays_proposed() {
     assert!(waiting.session_stopped);
     assert!(waiting.output.is_none());
 }
+
+#[tokio::test]
+async fn a_deleted_block_that_has_run_leaves_the_page_and_the_notebook_file() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo deleteme", HUMAN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    h.core.delete_block(&block.id).unwrap();
+    h.core.delete_block(&block.id).unwrap();
+
+    let deleted = h.core.block(&block.id).unwrap();
+    assert_eq!(deleted.state, BlockState::Deleted);
+    assert!(deleted.output.is_none() && deleted.code.is_empty());
+    let file = std::fs::read_to_string(h.dir.path().join("notebooks/nb.md")).unwrap();
+    assert!(!file.contains("deleteme"));
+    let view = ai_dev::notebook_view::render(&h.core, "nb", ai_dev::notebook_view::Part::Block(block.id.clone())).await;
+    assert!(view.contains(" hidden></div>") && !view.contains("deleteme"), "{view}");
+}
+
+#[tokio::test]
+async fn a_block_that_is_not_finished_or_failed_cannot_be_deleted() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "sleep 5", HUMAN).unwrap();
+    assert!(h.core.delete_block(&block.id).is_err());
+
+    h.core.approve_run(&block.id, None, None).unwrap();
+    assert!(h.core.delete_block(&block.id).is_err());
+    assert_ne!(h.core.block(&block.id).unwrap().state, BlockState::Deleted);
+}

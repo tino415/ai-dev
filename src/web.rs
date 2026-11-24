@@ -57,6 +57,7 @@ pub fn router(app: App) -> Router {
         .route("/b/{id}/start-and-run", post(start_and_run_block))
         .route("/b/{id}/cancel-start", post(cancel_start))
         .route("/b/{id}/reject", post(reject_block))
+        .route("/b/{id}/delete", post(delete_block))
         .route("/b/{id}/release", post(release_block))
         .route("/b/{id}/hide", post(hide_block))
         .route("/joins/{id}/approve", post(approve_join))
@@ -456,6 +457,11 @@ async fn reject_block(
     Form(form): Form<RejectForm>,
 ) -> Answer {
     app.core.reject_block(&id, form.note).map_err(bad)?;
+    Ok(answer_for_block(&app, &headers, &id).await)
+}
+
+async fn delete_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+    app.core.delete_block(&id).map_err(bad)?;
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 

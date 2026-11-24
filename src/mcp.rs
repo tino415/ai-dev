@@ -194,6 +194,9 @@ impl Mcp {
 
 impl Mcp {
     fn block_view(&self, block: &Block, page: usize) -> Value {
+        if block.state == BlockState::Deleted {
+            return json!({ "block_id": block.id, "state": block.state, "output": "the owner deleted this block" });
+        }
         let mut view = json!({
             "block_id": block.id,
             "link": self.core.block_link(block),

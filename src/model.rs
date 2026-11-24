@@ -89,6 +89,13 @@ pub enum BlockState {
     Finished,
     Failed,
     Rejected,
+    Deleted,
+}
+
+impl BlockState {
+    pub fn is_dropped(self) -> bool {
+        matches!(self, BlockState::Rejected | BlockState::Deleted)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
