@@ -472,6 +472,7 @@ async fn a_deleted_block_that_has_run_leaves_the_page_and_the_notebook_file() {
     wait_for(&h.core, &block.id, BlockState::Finished).await;
 
     h.core.delete_block(&block.id).unwrap();
+    h.core.delete_block(&block.id).unwrap();
 
     let deleted = h.core.block(&block.id).unwrap();
     assert_eq!(deleted.state, BlockState::Deleted);

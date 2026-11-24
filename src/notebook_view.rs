@@ -353,7 +353,7 @@ fn code_and_actions(block: &Block) -> String {
     let rerun = if matches!(block.state, BlockState::Finished | BlockState::Failed) {
         format!(
             "<div class=\"actions\"><button hx-post=\"/b/{id}/rerun\" data-working=\"Running…\">Run again</button>\
-<button class=\"no\" hx-post=\"/b/{id}/delete\" hx-confirm=\"Delete this block and its output?\" data-working=\"Deleting…\">Delete</button></div>",
+<button class=\"no\" hx-post=\"/b/{id}/delete\" hx-confirm=\"Remove this block and its output from the notebook? The session log keeps what it printed.\" data-working=\"Deleting…\">Delete</button></div>",
             id = block.id
         )
     } else {
@@ -456,6 +456,7 @@ fn session_i_last_ran_in(core: &Core, notebook: &str) -> Option<String> {
     core.blocks(notebook)
         .into_iter()
         .rev()
+        .filter(|block| !block.state.is_dropped())
         .find(|block| block.author == HUMAN)
         .map(|block| block.session)
 }

@@ -636,6 +636,9 @@ impl Core {
     pub fn delete_block(&self, id: &str) -> Result<()> {
         let mut state = self.state();
         let block = block_mut(&mut state, id)?;
+        if block.state == BlockState::Deleted {
+            return Ok(());
+        }
         if !matches!(block.state, BlockState::Finished | BlockState::Failed) {
             return Err("only a block that has run can be deleted".into());
         }
@@ -643,7 +646,10 @@ impl Core {
         block.code.clear();
         block.output = None;
         block.note = None;
+        block.why = None;
         block.proposed_code = None;
+        block.read = ReadDecision::Undecided;
+        block.hidden_input_sent = false;
         let notebook = block.notebook.clone();
         self.save_notebook(&state, &notebook)?;
         drop(state);
