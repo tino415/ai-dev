@@ -279,7 +279,7 @@ fn labelled(label: &str, code: &str) -> String {
 
 fn block_view(version: u64, block: &Block) -> String {
     let live = live(&format!("b-{}", block.id), &format!("b-{}", block.id), version);
-    if block.state == BlockState::Rejected {
+    if block.state.is_dropped() {
         return format!("<div {live} hidden></div>");
     }
     let by_agent = block.proposed_by_agent();
@@ -352,8 +352,9 @@ fn code_and_actions(block: &Block) -> String {
         .unwrap_or_default();
     let rerun = if matches!(block.state, BlockState::Finished | BlockState::Failed) {
         format!(
-            "<div class=\"actions\"><button hx-post=\"/b/{}/rerun\" data-working=\"Running…\">Run again</button></div>",
-            block.id
+            "<div class=\"actions\"><button hx-post=\"/b/{id}/rerun\" data-working=\"Running…\">Run again</button>\
+<button class=\"no\" hx-post=\"/b/{id}/delete\" hx-confirm=\"Delete this block and its output?\" data-working=\"Deleting…\">Delete</button></div>",
+            id = block.id
         )
     } else {
         String::new()

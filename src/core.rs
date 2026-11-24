@@ -633,6 +633,24 @@ impl Core {
         Ok(())
     }
 
+    pub fn delete_block(&self, id: &str) -> Result<()> {
+        let mut state = self.state();
+        let block = block_mut(&mut state, id)?;
+        if !matches!(block.state, BlockState::Finished | BlockState::Failed) {
+            return Err("only a block that has run can be deleted".into());
+        }
+        block.state = BlockState::Deleted;
+        block.code.clear();
+        block.output = None;
+        block.note = None;
+        block.proposed_code = None;
+        let notebook = block.notebook.clone();
+        self.save_notebook(&state, &notebook)?;
+        drop(state);
+        self.notify_block(&notebook, id);
+        Ok(())
+    }
+
     pub fn decide_read(&self, id: &str, decision: ReadDecision) -> Result<()> {
         let mut state = self.state();
         let block = block_mut(&mut state, id)?;

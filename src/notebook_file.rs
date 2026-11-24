@@ -12,7 +12,7 @@ pub struct SavedBlock {
 
 pub fn serialize(notebook: &str, blocks: &[Block]) -> String {
     let mut text = format!("# {notebook}\n");
-    for block in blocks.iter().filter(|block| block.state != crate::model::BlockState::Rejected) {
+    for block in blocks.iter().filter(|block| !block.state.is_dropped()) {
         text.push('\n');
         if let Some(why) = &block.why {
             text.push_str(&format!("{WHY}{}\n", one_line(why)));
