@@ -65,7 +65,8 @@ write. A press (Run, Run again, Start and run, a new block, Reject, Delete) that
 does nothing else: `<name>.md changed on disk. It was loaded again and nothing ran.` Blocks are matched by id
 and follow the file's order; a block whose code, session and why did not change keeps its state and output,
 one whose text changed becomes saved, one the file no longer has leaves the page, and a queued or running
-block keeps running. A file with a block that has no id, or an id used twice, is not loaded: the notebook
+block keeps running. A file with a block that has no id, an id used twice, an id another notebook holds, or
+an id with more than letters, digits, `-` and `_` is not loaded, nor is a file that went missing: the notebook
 keeps its blocks and ai-dev does not write that file until it is fixed. Creating a notebook whose file exists
 loads that file.
 

@@ -30,6 +30,7 @@ pub fn serialize(notebook: &str, blocks: &[Block]) -> String {
 pub enum FileError {
     BlockWithoutId,
     RepeatedId(String),
+    UnsafeId(String),
 }
 
 impl FileError {
@@ -37,6 +38,7 @@ impl FileError {
         match self {
             FileError::BlockWithoutId => format!("{notebook}.md: a block has no id"),
             FileError::RepeatedId(id) => format!("{notebook}.md: block id {id} is used twice"),
+            FileError::UnsafeId(id) => format!("{notebook}.md: block id {id} uses more than a-z, A-Z, 0-9, - and _"),
         }
     }
 }
@@ -47,6 +49,9 @@ pub fn parse(text: &str) -> Result<Vec<SavedBlock>, FileError> {
     for block in &blocks {
         if block.id.is_empty() {
             return Err(FileError::BlockWithoutId);
+        }
+        if !block.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Err(FileError::UnsafeId(block.id.clone()));
         }
         if !seen.insert(block.id.as_str()) {
             return Err(FileError::RepeatedId(block.id.clone()));
@@ -82,7 +87,7 @@ fn parse_blocks(text: &str) -> Vec<SavedBlock> {
     blocks
 }
 
-fn one_line(text: &str) -> String {
+pub fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
@@ -145,5 +150,14 @@ mod tests {
     fn an_id_used_twice_is_an_error() {
         let text = "# nb\n\n```sh session=prod author=human id=abc\nls\n```\n\n```sh session=prod author=human id=abc\npwd\n```\n";
         assert_eq!(parse(text).err().unwrap().message("nb"), "nb.md: block id abc is used twice");
+    }
+
+    #[test]
+    fn an_id_that_could_break_out_of_an_html_attribute_is_an_error() {
+        let text = "# nb\n\n```sh session=prod author=human id=x\"onmouseover=\"alert(1)\nls\n```\n";
+        assert_eq!(
+            parse(text).err().unwrap().message("nb"),
+            "nb.md: block id x\"onmouseover=\"alert(1) uses more than a-z, A-Z, 0-9, - and _"
+        );
     }
 }

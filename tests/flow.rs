@@ -561,6 +561,80 @@ async fn a_file_with_a_repeated_id_is_refused_and_not_written() {
 }
 
 #[tokio::test]
+async fn an_agents_block_with_a_why_on_two_lines_keeps_its_output_through_a_load() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.propose_block("nb", "sh", "echo kept", "agent-a", "check the\nlogs").unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    wait_for(&h.core, &block.id, BlockState::Finished).await;
+    let written = std::fs::read_to_string(notebook_file(&h)).unwrap();
+    std::fs::write(notebook_file(&h), format!("{written}\n```sh session=sh author=human id=added\nls\n```\n")).unwrap();
+
+    h.core.load_notebook_file_if_changed("nb");
+
+    assert_eq!(h.core.block(&block.id).unwrap().state, BlockState::Finished);
+}
+
+#[tokio::test]
+async fn a_notebook_over_a_copy_of_another_notebooks_file_is_not_loaded() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    h.core.save_session(SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &[])).unwrap();
+    let block = h.core.add_block("nb", "sh", "echo original", "agent-a").unwrap();
+    std::fs::copy(notebook_file(&h), h.dir.path().join("notebooks/copy.md")).unwrap();
+
+    h.core.create_notebook("copy").unwrap();
+
+    let expected = format!("copy.md: block id {} is used in notebook nb", block.id);
+    assert_eq!(h.core.notebook_file_error("copy"), Some(expected));
+    assert!(h.core.blocks("copy").is_empty());
+}
+
+#[tokio::test]
+async fn a_missing_file_keeps_the_blocks_and_is_not_written() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    h.core.save_session(SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &[])).unwrap();
+    let block = h.core.add_block("nb", "sh", "echo kept", "agent-a").unwrap();
+    std::fs::remove_file(notebook_file(&h)).unwrap();
+
+    let error = h.core.add_block("nb", "sh", "echo more", HUMAN).err().unwrap();
+
+    assert_eq!(error, "nb.md is missing");
+    assert!(!notebook_file(&h).exists());
+    assert_eq!(h.core.blocks("nb").len(), 1);
+    assert_eq!(h.core.block(&block.id).unwrap().state, BlockState::Pending);
+}
+
+#[tokio::test]
+async fn a_rejected_block_and_its_note_survive_a_load() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    h.core.save_session(SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &[])).unwrap();
+    let block = h.core.add_block("nb", "sh", "echo no", "agent-a").unwrap();
+    h.core.reject_block(&block.id, Some("use the replica".into())).unwrap();
+    std::fs::write(notebook_file(&h), "# nb\n\n```sh session=sh author=human id=added\nls\n```\n").unwrap();
+
+    h.core.load_notebook_file_if_changed("nb");
+
+    let rejected = h.core.block(&block.id).unwrap();
+    assert_eq!((rejected.state, rejected.note.as_deref()), (BlockState::Rejected, Some("use the replica")));
+}
+
+#[tokio::test]
+async fn a_block_limit_too_large_for_the_clock_means_no_limit() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session_with_block_limit(&h.core, "sh", Some(u64::MAX)).await;
+
+    let block = h.core.add_block("nb", "sh", "echo fine", HUMAN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+
+    wait_for(&h.core, &block.id, BlockState::Finished).await;
+}
+
+#[tokio::test]
 async fn a_block_in_a_session_with_no_limit_runs_past_one_second() {
     let h = harness();
     h.core.create_notebook("nb").unwrap();

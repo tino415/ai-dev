@@ -554,7 +554,7 @@ impl Core {
             entry.sessions.push(session.to_string());
         }
         let mut block = Block::new(notebook, session, &normalize_newlines(code), author);
-        block.why = why;
+        block.why = why.map(|why| notebook_file::one_line(&why));
         let auto = block.proposed_by_agent() && policy == Policy::Auto;
         if auto {
             block.state = BlockState::Queued;
@@ -897,7 +897,7 @@ impl Core {
         self.touch(&def.name);
         let deadline = def
             .block_timeout_secs
-            .map(|secs| (secs, Instant::now() + Duration::from_secs(secs)));
+            .and_then(|secs| Some((secs, Instant::now().checked_add(Duration::from_secs(secs))?)));
         let mut next_liveness_check = Instant::now() + LIVENESS_CHECK;
         loop {
             self.touch(&def.name);
@@ -1137,35 +1137,33 @@ impl Core {
     }
 
     fn compare_with_disk(&self, state: &mut State, notebook: &str) -> OnDisk {
-        let text = match read_notebook_text(&self.dir, notebook) {
-            Ok(text) => text,
-            Err(error) => return OnDisk::Unloadable(error),
+        let remembered = state.files.remove(notebook).unwrap_or_default();
+        let checked = read_notebook_text(&self.dir, notebook, &remembered.text_as_last_read_or_written)
+            .and_then(|text| loadable_blocks(state, notebook, &text).map(|saved| (text, saved)));
+        let (on_disk, text) = match checked {
+            Ok((text, _)) if text == remembered.text_as_last_read_or_written => (OnDisk::AsRemembered, text),
+            Ok((text, saved)) => {
+                load_blocks(state, notebook, saved);
+                (OnDisk::LoadedAgain, text)
+            }
+            Err(error) => (OnDisk::Unloadable(error), remembered.text_as_last_read_or_written),
         };
-        let file = state.files.entry(notebook.to_string()).or_default();
-        if file.text_as_last_read_or_written == text {
-            return match &file.unloadable {
-                Some(error) => OnDisk::Unloadable(error.clone()),
-                None => OnDisk::AsRemembered,
-            };
+        let unloadable = match &on_disk {
+            OnDisk::Unloadable(error) => Some(error.clone()),
+            _ => None,
+        };
+        if matches!(on_disk, OnDisk::LoadedAgain) || unloadable != remembered.unloadable {
+            self.notify(Change::NotebookLoaded {
+                notebook: notebook.to_string(),
+            });
         }
-        let parsed = notebook_file::parse(&text).map_err(|error| error.message(notebook));
         state.files.insert(
             notebook.to_string(),
             NotebookFile {
                 text_as_last_read_or_written: text,
-                unloadable: parsed.as_ref().err().cloned(),
+                unloadable,
             },
         );
-        let on_disk = match parsed {
-            Ok(saved) => {
-                load_blocks(state, notebook, saved);
-                OnDisk::LoadedAgain
-            }
-            Err(error) => OnDisk::Unloadable(error),
-        };
-        self.notify(Change::NotebookLoaded {
-            notebook: notebook.to_string(),
-        });
         on_disk
     }
 }
@@ -1229,11 +1227,23 @@ fn notebook_path(dir: &Path, notebook: &str) -> PathBuf {
     dir.join("notebooks").join(format!("{notebook}.md"))
 }
 
-fn read_notebook_text(dir: &Path, notebook: &str) -> Result<String> {
+fn read_notebook_text(dir: &Path, notebook: &str, remembered: &str) -> Result<String> {
     match std::fs::read_to_string(notebook_path(dir, notebook)) {
         Ok(text) => Ok(text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && remembered.is_empty() => Ok(String::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!("{notebook}.md is missing")),
         Err(e) => Err(format!("{notebook}.md: {e}")),
+    }
+}
+
+fn loadable_blocks(state: &State, notebook: &str, text: &str) -> Result<Vec<notebook_file::SavedBlock>> {
+    let saved = notebook_file::parse(text).map_err(|error| error.message(notebook))?;
+    let elsewhere = saved
+        .iter()
+        .find_map(|saved| state.blocks.iter().find(|b| b.notebook != notebook && b.id == saved.id));
+    match elsewhere {
+        Some(block) => Err(format!("{notebook}.md: block id {} is used in notebook {}", block.id, block.notebook)),
+        None => Ok(saved),
     }
 }
 
@@ -1241,10 +1251,16 @@ fn load_blocks(state: &mut State, notebook: &str, saved: Vec<notebook_file::Save
     let (mut held, others): (Vec<Block>, Vec<Block>) =
         std::mem::take(&mut state.blocks).into_iter().partition(|b| b.notebook == notebook);
     state.blocks = others;
+    let file_ids: std::collections::HashSet<String> = saved.iter().map(|saved| saved.id.clone()).collect();
+    let dropped_ones_the_file_never_lists = held
+        .iter()
+        .filter(|b| b.state.is_dropped() && !file_ids.contains(&b.id))
+        .cloned()
+        .collect::<Vec<_>>();
     for saved in saved {
         let from_file = saved_block(notebook, saved);
         let block = match held.iter().position(|b| b.id == from_file.id).map(|at| held.swap_remove(at)) {
-            Some(held) if held.has_the_text_of(&from_file) => held,
+            Some(held) if !held.state.is_dropped() && held.has_the_text_of(&from_file) => held,
             Some(held) if matches!(held.state, BlockState::Queued | BlockState::Running) => Block {
                 code: from_file.code,
                 session: from_file.session,
@@ -1256,6 +1272,7 @@ fn load_blocks(state: &mut State, notebook: &str, saved: Vec<notebook_file::Save
         };
         state.blocks.push(block);
     }
+    state.blocks.extend(dropped_ones_the_file_never_lists);
 }
 
 fn saved_block(notebook: &str, saved: notebook_file::SavedBlock) -> Block {
