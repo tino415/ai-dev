@@ -334,6 +334,29 @@ async fn a_session_started_under_the_units_path_keeps_running_while_notebooks_op
 }
 
 #[tokio::test]
+async fn the_page_terminal_draws_in_a_monospace_font() {
+    let _one = ONE_BROWSER_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    create_bash_session(&ui, &server, "sh").await;
+
+    ui.open(&server.url("/sessions/sh/terminal")).await;
+    ui.wait_until("the terminal connected", "document.getElementById('terminal').dataset.state === 'connected'")
+        .await;
+
+    let widths: Value = ui
+        .eval(
+            "(() => { const rows = getComputedStyle(document.querySelector('.xterm-rows')); \
+             const width = text => { const probe = document.createElement('span'); \
+             probe.style.fontFamily = rows.fontFamily; probe.style.fontSize = rows.fontSize; \
+             probe.style.whiteSpace = 'pre'; probe.textContent = text.repeat(20); document.body.append(probe); \
+             const measured = probe.getBoundingClientRect().width; probe.remove(); return measured; }; \
+             return { i: width('i'), w: width('W') }; })()",
+        )
+        .await;
+    assert_eq!(widths["i"], widths["w"], "i and W differ in width: {widths}");
+}
+
+#[tokio::test]
 async fn typing_into_the_page_terminal_runs_in_the_session_and_its_output_shows_in_the_rows() {
     let _one = ONE_BROWSER_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let (server, ui) = signed_in().await;

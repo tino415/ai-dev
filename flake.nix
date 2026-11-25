@@ -30,6 +30,7 @@
             tmux
             chromium
           ];
+          FONTCONFIG_FILE = pkgs.makeFontsConf { fontDirectories = [ pkgs.dejavu_fonts ]; };
         };
       });
     };
