@@ -116,9 +116,10 @@ pub fn attach_line(core: &Core, def: &SessionDef, running: bool) -> String {
         return String::new();
     }
     format!(
-        "<div class=\"policy\"><code>tmux -L {} attach -t {}</code></div>",
-        esc(core.tmux_socket()),
-        esc(&def.name)
+        "<div class=\"policy\"><code>tmux -L {socket} attach -t {n}</code> \
+<a href=\"/sessions/{n}/terminal\" target=\"_blank\" rel=\"noopener\">Terminal ↗</a></div>",
+        socket = esc(core.tmux_socket()),
+        n = esc(&def.name)
     )
 }
 

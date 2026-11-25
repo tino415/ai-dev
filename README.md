@@ -92,3 +92,13 @@ Block text and hidden input reach tmux through stdin (`load-buffer`, `paste-buff
 that reads the terminal discards what was typed ahead.
 
 A notebook reopened after a restart shows its blocks as `saved`: they hold code only and need a click to run again.
+
+## Terminal
+
+A running session's `Terminal ↗` link, in the notebook and on the Sessions page, opens `/sessions/<name>/terminal`
+in a new tab: a live xterm.js view of the session. Typing works as in `tmux attach`, and what you type while a block
+runs lands in that block's output, as the banner says. While a page terminal is open the session fits the page;
+after the last one closes it goes back to 220×50. An open page terminal is an attached client, so the session does
+not idle out meanwhile. Secrets show unmasked there, as in `tmux attach`; no agent reads this channel. The page
+talks to a tmux client the server runs under a PTY, over a WebSocket that needs the passkey login and refuses a
+page from any origin but `AI_DEV_ORIGIN`.

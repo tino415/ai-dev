@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 
 use crate::model::*;
 use crate::notebook_file;
-use crate::tmux::{strip_terminal_escapes, Tmux};
+use crate::tmux::{strip_terminal_escapes, AttachedClient, TerminalSize, Tmux};
 use crate::vars;
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -368,6 +368,27 @@ impl Core {
         self.tmux.stop(name).await;
         self.state().last_activity.remove(name);
         self.notify(Change::Sessions);
+    }
+
+    pub async fn attach_terminal(&self, name: &str, size: TerminalSize) -> Result<(pty_process::Pty, AttachedClient)> {
+        if !self.is_running(name).await {
+            return Err(format!("session {name} is not running"));
+        }
+        self.touch(name);
+        self.tmux.attach_client(name, size)
+    }
+
+    pub async fn detach_terminal(&self, name: &str, client: AttachedClient) {
+        self.tmux.detach_client(name, client).await;
+        self.touch(name);
+    }
+
+    pub fn running_block_in(&self, session: &str) -> Option<String> {
+        self.state()
+            .blocks
+            .iter()
+            .find(|block| block.session == session && block.state == BlockState::Running)
+            .map(|block| block.id.clone())
     }
 
     pub async fn reap_idle_sessions(&self) {
