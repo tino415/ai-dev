@@ -3,6 +3,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use chromiumoxide::cdp::browser_protocol::web_authn::{
     AddVirtualAuthenticatorParams, AuthenticatorProtocol, AuthenticatorTransport, EnableParams,
     VirtualAuthenticatorOptions,
@@ -353,6 +354,32 @@ async fn typing_into_the_page_terminal_runs_in_the_session_and_its_output_shows_
         "[...document.querySelectorAll('.xterm-rows > div')].some(row => row.textContent.trim() === 'e2e-ok')",
     )
     .await;
+}
+
+#[tokio::test]
+async fn on_a_phone_the_key_row_sits_inside_the_window_below_the_terminal() {
+    let _one = ONE_BROWSER_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    create_bash_session(&ui, &server, "sh").await;
+    let phone = SetDeviceMetricsOverrideParams::new(390, 844, 2.0, true);
+    ui.page.execute(phone).await.unwrap();
+
+    ui.open(&server.url("/sessions/sh/terminal")).await;
+    ui.wait_until("the terminal connected", "document.getElementById('terminal').dataset.state === 'connected'")
+        .await;
+
+    let layout: Value = ui
+        .eval(
+            "(() => { const keys = document.getElementById('keys').getBoundingClientRect(); \
+             const xterm = document.querySelector('.xterm').getBoundingClientRect(); \
+             return { window: innerHeight, page: document.documentElement.scrollHeight, \
+             keys_top: keys.top, keys_bottom: keys.bottom, xterm_bottom: xterm.bottom }; })()",
+        )
+        .await;
+    let at = |key: &str| layout[key].as_f64().unwrap();
+    assert!(at("page") <= at("window"), "the page scrolls: {layout}");
+    assert!(at("keys_bottom") <= at("window"), "the key row ends below the window: {layout}");
+    assert!(at("xterm_bottom") <= at("keys_top"), "the terminal covers the key row: {layout}");
 }
 
 #[tokio::test]

@@ -7,7 +7,7 @@ pub const XTERM_FIT: &str = include_str!("static/addon-fit-0.11.0.js");
 pub const TERMINAL_SCRIPT: &str = include_str!("static/terminal.js");
 
 const STYLE: &str = r#"
-.terminal { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+.terminal-page { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
 .thead { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .thead b { flex: 1; font-family: ui-monospace, monospace; font-size: 14px; }
 .banner { background: var(--warn-bg); color: var(--warn); font-size: 13px; padding: 6px 12px; }
@@ -54,7 +54,7 @@ pub fn page(def: &SessionDef, running: bool) -> String {
         &def.name,
         &format!(
             "<link rel=\"stylesheet\" href=\"/static/xterm-6.0.0.css\"><style>{STYLE}</style>\
-<div class=\"terminal\" id=\"terminal\" data-session=\"{name}\" data-state=\"{state}\">\
+<div class=\"terminal-page\" id=\"terminal\" data-session=\"{name}\" data-state=\"{state}\">\
 <div class=\"thead\"><span class=\"{dot}\" id=\"dot\"></span><b>{name}</b>\
 <span class=\"policy\" id=\"connection\">{connection}</span><button type=\"button\" id=\"close\">Close</button></div>\
 <div class=\"banner\" id=\"banner\" hidden></div>\
