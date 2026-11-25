@@ -22,6 +22,7 @@ header nav form { margin: 0; }
 .layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; padding: 16px; max-width: 1200px; margin: 0 auto; }
 @media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
 .single { padding: 16px; max-width: 900px; margin: 0 auto; }
+footer.meta { margin-top: 2rem; padding: 8px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 16px; }
 .panel h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin: 0 0 8px; }
 .session { display: flex; justify-content: space-between; align-items: center; padding: 6px 0; border-top: 1px solid var(--line); gap: 8px; }
@@ -105,7 +106,11 @@ pub fn esc(text: &str) -> String {
 pub fn page(title: &str, body: &str) -> String {
     document(
         title,
-        &format!("<header><h1>{}</h1>{NAV}</header><main class=\"single\">{body}</main>{FLASH}{SCRIPTS}", esc(title)),
+        &format!(
+            "<header><h1>{}</h1>{NAV}</header><main class=\"single\">{body}</main>{}{FLASH}{SCRIPTS}",
+            esc(title),
+            footer()
+        ),
     )
 }
 
@@ -113,9 +118,10 @@ pub fn notebook_page(title: &str, sub: &str, layout: &str) -> String {
     document(
         title,
         &format!(
-            "<header><h1>{}</h1><span class=\"sub\">{}</span>{NAV}</header>{layout}{FLASH}{SCRIPTS}",
+            "<header><h1>{}</h1><span class=\"sub\">{}</span>{NAV}</header>{layout}{}{FLASH}{SCRIPTS}",
             esc(title),
-            esc(sub)
+            esc(sub),
+            footer()
         ),
     )
 }
@@ -123,8 +129,59 @@ pub fn notebook_page(title: &str, sub: &str, layout: &str) -> String {
 pub fn sign_in_page(title: &str, body: &str, script: &str) -> String {
     document(
         title,
-        &format!("<header><h1>ai-dev</h1></header><main class=\"single\">{body}</main><script>{script}</script>"),
+        &format!(
+            "<header><h1>ai-dev</h1></header><main class=\"single\">{body}</main>{}<script>{script}</script>",
+            footer()
+        ),
     )
+}
+
+const COMMIT_URL: &str = "https://github.com/tino415/ai-dev/commit/";
+
+fn footer() -> String {
+    footer_for(option_env!("AI_DEV_REV"))
+}
+
+fn footer_for(rev: Option<&str>) -> String {
+    let version = concat!("ai-dev ", env!("CARGO_PKG_VERSION"));
+    match rev {
+        Some(rev) => {
+            let (commit, dirty) = rev.strip_suffix("-dirty").map_or((rev, ""), |commit| (commit, "-dirty"));
+            let short: String = commit.chars().take(7).collect();
+            format!(
+                "<footer class=\"meta\">{version} · <a href=\"{COMMIT_URL}{}\">{}{dirty}</a></footer>",
+                esc(commit),
+                esc(&short)
+            )
+        }
+        None => format!("<footer class=\"meta\">{version}</footer>"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::footer_for;
+
+    #[test]
+    fn a_clean_rev_shows_seven_characters_linking_to_its_commit() {
+        assert_eq!(
+            footer_for(Some("89356b3c0ffee0000000000000000000000000ab")),
+            "<footer class=\"meta\">ai-dev 0.1.0 · <a href=\"https://github.com/tino415/ai-dev/commit/89356b3c0ffee0000000000000000000000000ab\">89356b3</a></footer>"
+        );
+    }
+
+    #[test]
+    fn a_dirty_rev_says_dirty_and_links_to_the_commit_it_started_from() {
+        assert_eq!(
+            footer_for(Some("89356b3c0ffee0000000000000000000000000ab-dirty")),
+            "<footer class=\"meta\">ai-dev 0.1.0 · <a href=\"https://github.com/tino415/ai-dev/commit/89356b3c0ffee0000000000000000000000000ab\">89356b3-dirty</a></footer>"
+        );
+    }
+
+    #[test]
+    fn no_rev_shows_the_version_alone() {
+        assert_eq!(footer_for(None), "<footer class=\"meta\">ai-dev 0.1.0</footer>");
+    }
 }
 
 fn document(title: &str, body: &str) -> String {

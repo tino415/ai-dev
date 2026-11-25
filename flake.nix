@@ -4,7 +4,7 @@
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 
   outputs =
-    { nixpkgs, ... }:
+    { self, nixpkgs, ... }:
     let
       systems = [
         "x86_64-linux"
@@ -16,7 +16,7 @@
       nixosModules.default = ./nix/module.nix;
 
       packages = forEachSystem (pkgs: rec {
-        ai-dev = pkgs.callPackage ./nix/package.nix { };
+        ai-dev = pkgs.callPackage ./nix/package.nix { rev = self.rev or self.dirtyRev or null; };
         default = ai-dev;
       });
 

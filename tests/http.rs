@@ -270,6 +270,13 @@ async fn the_manifest_and_its_icons_answer_without_a_login() {
 }
 
 #[tokio::test]
+async fn the_login_page_shows_the_running_version_in_its_footer() {
+    let s = server().await;
+    let page = s.client.get(format!("{}/login", s.base)).send().await.unwrap().text().await.unwrap();
+    assert!(page.contains("<footer class=\"meta\">ai-dev 0.1.0"), "{page}");
+}
+
+#[tokio::test]
 async fn the_login_page_links_the_manifest_and_icons() {
     let s = server().await;
     let page = s.client.get(format!("{}/login", s.base)).send().await.unwrap().text().await.unwrap();

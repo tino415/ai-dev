@@ -5,6 +5,7 @@
   openssl,
   tmux,
   makeWrapper,
+  rev ? null,
 }:
 
 rustPlatform.buildRustPackage {
@@ -19,6 +20,7 @@ rustPlatform.buildRustPackage {
     makeWrapper
   ];
   doCheck = false;
+  env = lib.optionalAttrs (rev != null) { AI_DEV_REV = rev; };
   buildInputs = [ openssl ];
 
   postInstall = ''
