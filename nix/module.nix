@@ -12,9 +12,16 @@ in
   options.services.ai-dev = {
     enable = lib.mkEnableOption "the ai-dev debug notebook";
 
+    rev = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = null;
+      description = "The git commit ai-dev is built from, shown in the page footer.";
+    };
+
     package = lib.mkOption {
       type = lib.types.package;
-      default = pkgs.callPackage ./package.nix { };
+      default = pkgs.callPackage ./package.nix { inherit (cfg) rev; };
+      defaultText = lib.literalExpression "pkgs.callPackage ./package.nix { inherit (config.services.ai-dev) rev; }";
     };
 
     user = lib.mkOption {
