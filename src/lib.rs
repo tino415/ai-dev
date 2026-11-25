@@ -5,6 +5,7 @@ pub mod mcp;
 pub mod model;
 pub mod notebook_file;
 pub mod notebook_view;
+pub mod terminal_view;
 pub mod tmux;
 pub mod vars;
 pub mod web;

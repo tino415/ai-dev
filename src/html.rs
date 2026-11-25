@@ -106,6 +106,7 @@ pub fn esc(text: &str) -> String {
 pub fn page(title: &str, body: &str) -> String {
     document(
         title,
+        Keyboard::CoversThePage,
         &format!(
             "<header><h1>{}</h1>{NAV}</header><main class=\"single\">{body}</main>{}{FLASH}{SCRIPTS}",
             esc(title),
@@ -117,6 +118,7 @@ pub fn page(title: &str, body: &str) -> String {
 pub fn notebook_page(title: &str, sub: &str, layout: &str) -> String {
     document(
         title,
+        Keyboard::CoversThePage,
         &format!(
             "<header><h1>{}</h1><span class=\"sub\">{}</span>{NAV}</header>{layout}{}{FLASH}{SCRIPTS}",
             esc(title),
@@ -129,6 +131,7 @@ pub fn notebook_page(title: &str, sub: &str, layout: &str) -> String {
 pub fn sign_in_page(title: &str, body: &str, script: &str) -> String {
     document(
         title,
+        Keyboard::CoversThePage,
         &format!(
             "<header><h1>ai-dev</h1></header><main class=\"single\">{body}</main>{}<script>{script}</script>",
             footer()
@@ -158,6 +161,35 @@ fn footer_for(rev: Option<&str>) -> String {
     }
 }
 
+pub enum Keyboard {
+    CoversThePage,
+    ShrinksThePage,
+}
+
+impl Keyboard {
+    fn viewport(&self) -> &'static str {
+        match self {
+            Keyboard::CoversThePage => "width=device-width,initial-scale=1",
+            Keyboard::ShrinksThePage => "width=device-width,initial-scale=1,interactive-widget=resizes-content",
+        }
+    }
+}
+
+pub fn document(title: &str, keyboard: Keyboard, body: &str) -> String {
+    format!(
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
+<meta name=\"viewport\" content=\"{}\">\
+<meta name=\"theme-color\" content=\"#3b5bdb\" media=\"(prefers-color-scheme: light)\">\
+<meta name=\"theme-color\" content=\"#161615\" media=\"(prefers-color-scheme: dark)\">\
+<link rel=\"manifest\" href=\"/static/manifest.webmanifest\">\
+<link rel=\"icon\" href=\"/static/icon-192.png\">\
+<link rel=\"apple-touch-icon\" href=\"/static/icon-192.png\">\
+<title>{} · ai-dev</title><style>{STYLE}</style></head><body>{body}</body></html>",
+        keyboard.viewport(),
+        esc(title)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::footer_for;
@@ -182,18 +214,4 @@ mod tests {
     fn no_rev_shows_the_version_alone() {
         assert_eq!(footer_for(None), "<footer class=\"meta\">ai-dev 0.1.0</footer>");
     }
-}
-
-fn document(title: &str, body: &str) -> String {
-    format!(
-        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
-<meta name=\"theme-color\" content=\"#3b5bdb\" media=\"(prefers-color-scheme: light)\">\
-<meta name=\"theme-color\" content=\"#161615\" media=\"(prefers-color-scheme: dark)\">\
-<link rel=\"manifest\" href=\"/static/manifest.webmanifest\">\
-<link rel=\"icon\" href=\"/static/icon-192.png\">\
-<link rel=\"apple-touch-icon\" href=\"/static/icon-192.png\">\
-<title>{} · ai-dev</title><style>{STYLE}</style></head><body>{body}</body></html>",
-        esc(title)
-    )
 }

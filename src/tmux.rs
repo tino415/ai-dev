@@ -3,6 +3,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
+use std::time::Duration;
 
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -10,6 +11,18 @@ use tokio::process::Command;
 use crate::model::short_id;
 
 const LAST_LINES_OF_A_DEAD_PANE: usize = 20;
+const CLIENT_GONE_WAIT: Duration = Duration::from_secs(2);
+const CLIENT_GONE_POLL: Duration = Duration::from_millis(50);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TerminalSize {
+    pub cols: u16,
+    pub rows: u16,
+}
+
+pub const DETACHED_SIZE: TerminalSize = TerminalSize { cols: 220, rows: 50 };
+
+pub struct AttachedClient(tokio::process::Child);
 
 #[derive(Clone)]
 pub struct Tmux {
@@ -37,10 +50,11 @@ impl Tmux {
         let shell = login_shell()?;
         self.create_private_log(session)?;
         let _ = self.run(&["kill-session", "-t", &exact_session(session)]).await;
+        let (cols, rows) = (DETACHED_SIZE.cols.to_string(), DETACHED_SIZE.rows.to_string());
         self.run(&[
             "start-server", ";",
             "set-option", "-wg", "remain-on-exit", "on", ";",
-            "new-session", "-d", "-s", session, "-x", "220", "-y", "50", &shell, "-l",
+            "new-session", "-d", "-s", session, "-x", &cols, "-y", &rows, &shell, "-l",
         ])
         .await?;
         let pipe = format!("cat >> '{}'", self.log_path(session).display());
@@ -133,9 +147,56 @@ impl Tmux {
     }
 
     pub async fn has_attached_client(&self, session: &str) -> bool {
-        self.run(&["list-clients", "-t", &exact_session(session), "-F", "#{client_tty}"])
+        !self.client_pids(session).await.is_empty()
+    }
+
+    async fn client_pids(&self, session: &str) -> Vec<u32> {
+        self.run(&["list-clients", "-t", &exact_session(session), "-F", "#{client_pid}"])
             .await
-            .is_ok_and(|clients| !clients.trim().is_empty())
+            .map(|pids| pids.lines().filter_map(|pid| pid.trim().parse().ok()).collect())
+            .unwrap_or_default()
+    }
+
+    pub fn attach_client(&self, session: &str, size: TerminalSize) -> Result<(pty_process::Pty, AttachedClient), String> {
+        let (pty, pts) = pty_process::open().map_err(|e| format!("pty: {e}"))?;
+        pty.resize(pty_size(size)).map_err(|e| format!("pty: {e}"))?;
+        let process = pty_process::Command::new("tmux")
+            .args(["-L", &self.socket, "-f", "/dev/null", "attach-session", "-t", &exact_session(session)])
+            .env("TERM", "xterm-256color")
+            .kill_on_drop(true)
+            .spawn(pts)
+            .map_err(|e| format!("tmux attach: {e}"))?;
+        Ok((pty, AttachedClient(process)))
+    }
+
+    pub async fn detach_client(&self, session: &str, AttachedClient(mut process): AttachedClient) {
+        let pid = process.id();
+        let _ = process.kill().await;
+        if let Some(pid) = pid {
+            self.wait_until_the_server_drops(session, pid).await;
+        }
+        self.restore_size(session).await;
+    }
+
+    async fn wait_until_the_server_drops(&self, session: &str, pid: u32) {
+        let deadline = tokio::time::Instant::now() + CLIENT_GONE_WAIT;
+        while self.client_pids(session).await.contains(&pid) && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(CLIENT_GONE_POLL).await;
+        }
+    }
+
+    pub async fn restore_size(&self, session: &str) {
+        if self.has_attached_client(session).await {
+            return;
+        }
+        let window = exact_pane(session);
+        let (cols, rows) = (DETACHED_SIZE.cols.to_string(), DETACHED_SIZE.rows.to_string());
+        let _ = self
+            .run(&[
+                "resize-window", "-t", &window, "-x", &cols, "-y", &rows, ";",
+                "set-option", "-wu", "-t", &window, "window-size",
+            ])
+            .await;
     }
 
     async fn run(&self, args: &[&str]) -> Result<String, String> {
@@ -186,6 +247,10 @@ fn login_shell() -> Result<String, String> {
     }
     let shell = unsafe { CStr::from_ptr(entry.pw_shell) }.to_string_lossy().into_owned();
     Ok(if shell.is_empty() { "/bin/sh".into() } else { shell })
+}
+
+pub fn pty_size(size: TerminalSize) -> pty_process::Size {
+    pty_process::Size::new(size.rows, size.cols)
 }
 
 fn exact_session(session: &str) -> String {

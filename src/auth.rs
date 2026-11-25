@@ -102,7 +102,7 @@ impl Auth {
             .is_some_and(|value| self.sessions.lock().expect("sessions").contains(&value))
     }
 
-    fn open_session(&self) -> String {
+    pub fn open_session(&self) -> String {
         let session = secret_token();
         self.sessions.lock().expect("sessions").insert(session.clone());
         let secure = if self.secure_cookie { "; Secure" } else { "" };

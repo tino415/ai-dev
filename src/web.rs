@@ -1,7 +1,9 @@
 use std::convert::Infallible;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
+use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
@@ -9,9 +11,12 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
-use futures::{stream, Stream, StreamExt};
+use futures::stream::SplitSink;
+use futures::{stream, SinkExt, Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::broadcast::error::RecvError;
 use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
@@ -21,6 +26,8 @@ use crate::core::{Change, Core, VariableScope};
 use crate::html::{esc, page, sign_in_page, HTMX, HTMX_SSE, PAGE_SCRIPT};
 use crate::model::*;
 use crate::notebook_view::{self, attach_line, policy_text, session_heading, toggle_label, Part};
+use crate::terminal_view::{self, TERMINAL_SCRIPT, XTERM, XTERM_FIT, XTERM_STYLE};
+use crate::tmux::{pty_size, TerminalSize};
 
 #[derive(Clone)]
 pub struct App {
@@ -67,6 +74,8 @@ pub fn router(app: App) -> Router {
         .route("/sessions/{name}/stop", post(stop_session))
         .route("/sessions/{name}/delete", post(delete_session))
         .route("/sessions/{name}/policy", post(update_session))
+        .route("/sessions/{name}/terminal", get(terminal_page))
+        .route("/sessions/{name}/terminal/socket", get(terminal_socket))
         .route("/proposals/{id}/start", post(start_proposal))
         .route("/proposals/{id}/reject", post(reject_proposal))
         .route("/profiles", get(profiles_page).post(create_profile))
@@ -75,6 +84,10 @@ pub fn router(app: App) -> Router {
         .route("/static/htmx-2.0.11.min.js", get(|| asset(SCRIPT, VERSIONED, HTMX.as_bytes())))
         .route("/static/htmx-ext-sse-2.2.4.js", get(|| asset(SCRIPT, VERSIONED, HTMX_SSE.as_bytes())))
         .route("/static/ai-dev.js", get(|| asset(SCRIPT, REVALIDATE, PAGE_SCRIPT.as_bytes())))
+        .route("/static/xterm-6.0.0.js", get(|| asset(SCRIPT, VERSIONED, XTERM.as_bytes())))
+        .route("/static/xterm-6.0.0.css", get(|| asset(STYLESHEET, VERSIONED, XTERM_STYLE.as_bytes())))
+        .route("/static/addon-fit-0.11.0.js", get(|| asset(SCRIPT, VERSIONED, XTERM_FIT.as_bytes())))
+        .route("/static/terminal.js", get(|| asset(SCRIPT, REVALIDATE, TERMINAL_SCRIPT.as_bytes())))
         .route("/static/manifest.webmanifest", get(|| asset("application/manifest+json", REVALIDATE, MANIFEST)))
         .route("/static/icon-192.png", get(|| asset("image/png", REVALIDATE, ICON_192)))
         .route("/static/icon-512.png", get(|| asset("image/png", REVALIDATE, ICON_512)))
@@ -113,6 +126,7 @@ async fn require_login(State(app): State<App>, request: Request, next: Next) -> 
 }
 
 const SCRIPT: &str = "text/javascript; charset=utf-8";
+const STYLESHEET: &str = "text/css; charset=utf-8";
 const VERSIONED: &str = "public, max-age=86400";
 const REVALIDATE: &str = "no-cache";
 
@@ -649,6 +663,148 @@ fn parse_policy(text: &str) -> Policy {
     } else {
         Policy::Ask
     }
+}
+
+// terminal
+
+const SCREEN_READ: usize = 16 * 1024;
+const PING_EVERY: Duration = Duration::from_secs(20);
+const PAGE_SILENCE_LIMIT: Duration = Duration::from_secs(60);
+const LARGEST_SIDE: u16 = 1000;
+
+async fn terminal_page(State(app): State<App>, Path(name): Path<String>) -> Result<Html<String>, Fail> {
+    let def = app.core.session(&name).ok_or((StatusCode::NOT_FOUND, "no such session".into()))?;
+    let running = app.core.is_running(&name).await;
+    Ok(Html(terminal_view::page(&def, running)))
+}
+
+#[derive(Deserialize)]
+struct SizeFrame {
+    cols: u16,
+    rows: u16,
+}
+
+impl From<SizeFrame> for TerminalSize {
+    fn from(frame: SizeFrame) -> Self {
+        TerminalSize {
+            cols: frame.cols.clamp(1, LARGEST_SIDE),
+            rows: frame.rows.clamp(1, LARGEST_SIDE),
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct PageFrame {
+    resize: Option<SizeFrame>,
+}
+
+async fn terminal_socket(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    Query(size): Query<SizeFrame>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Answer {
+    let origin = headers.get(header::ORIGIN).and_then(|value| value.to_str().ok());
+    if origin != Some(app.core.origin()) {
+        return Err((StatusCode::FORBIDDEN, "the terminal answers pages of this origin only".into()));
+    }
+    app.core.session(&name).ok_or((StatusCode::NOT_FOUND, "no such session".into()))?;
+    if !app.core.is_running(&name).await {
+        return Err((StatusCode::CONFLICT, format!("session {name} is not running")));
+    }
+    let core = Arc::clone(&app.core);
+    Ok(upgrade
+        .on_upgrade(move |socket| pump_terminal(core, name, size.into(), socket))
+        .into_response())
+}
+
+async fn pump_terminal(core: Arc<Core>, session: String, size: TerminalSize, socket: WebSocket) {
+    let (mut to_page, mut from_page) = socket.split();
+    let (pty, client) = match core.attach_terminal(&session, size).await {
+        Ok(attached) => attached,
+        Err(_) => {
+            if !core.is_running(&session).await {
+                send_within_deadline(&mut to_page, state_frame(json!({ "session": "stopped" }))).await;
+            }
+            return;
+        }
+    };
+    let (mut screen, mut keyboard) = pty.into_split();
+    let mut changes = core.subscribe();
+    let mut running_block = core.running_block_in(&session);
+    let mut bytes = vec![0u8; SCREEN_READ];
+    let mut ping = tokio::time::interval(PING_EVERY);
+    let mut last_heard = tokio::time::Instant::now();
+    send_within_deadline(&mut to_page, state_frame(json!({ "running_block": running_block }))).await;
+    loop {
+        tokio::select! {
+            read = screen.read(&mut bytes) => {
+                let Ok(count @ 1..) = read else {
+                    if !core.is_running(&session).await {
+                        send_within_deadline(&mut to_page, state_frame(json!({ "session": "stopped" }))).await;
+                    }
+                    break;
+                };
+                if !send_within_deadline(&mut to_page, Message::Binary(bytes[..count].to_vec().into())).await {
+                    break;
+                }
+            }
+            _ = ping.tick() => {
+                if last_heard.elapsed() > PAGE_SILENCE_LIMIT
+                    || !send_within_deadline(&mut to_page, Message::Ping(Default::default())).await
+                {
+                    break;
+                }
+            }
+            frame = from_page.next() => {
+                let Some(Ok(frame)) = frame else { break };
+                last_heard = tokio::time::Instant::now();
+                match frame {
+                    Message::Binary(typed) => {
+                        if keyboard.write_all(&typed).await.is_err() {
+                            break;
+                        }
+                    }
+                    Message::Text(text) => {
+                        if let Ok(PageFrame { resize: Some(size) }) = serde_json::from_str(&text) {
+                            let _ = keyboard.resize(pty_size(size.into()));
+                        }
+                    }
+                    Message::Close(_) => break,
+                    Message::Ping(_) | Message::Pong(_) => {}
+                }
+            }
+            change = changes.recv() => {
+                let affects_sessions = matches!(change, Ok(Change::Sessions) | Err(RecvError::Lagged(_)));
+                let affects_blocks = matches!(change, Ok(Change::Block { .. }) | Err(RecvError::Lagged(_)));
+                if matches!(change, Err(RecvError::Closed)) {
+                    break;
+                }
+                if affects_sessions && !core.is_running(&session).await {
+                    send_within_deadline(&mut to_page, state_frame(json!({ "session": "stopped" }))).await;
+                    break;
+                }
+                let now_running = core.running_block_in(&session);
+                if affects_blocks && now_running != running_block {
+                    running_block = now_running;
+                    if !send_within_deadline(&mut to_page, state_frame(json!({ "running_block": running_block }))).await {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    drop((screen, keyboard));
+    core.detach_terminal(&session, client).await;
+}
+
+fn state_frame(state: Value) -> Message {
+    Message::Text(state.to_string().into())
+}
+
+async fn send_within_deadline(to_page: &mut SplitSink<WebSocket, Message>, message: Message) -> bool {
+    matches!(tokio::time::timeout(PAGE_SILENCE_LIMIT, to_page.send(message)).await, Ok(Ok(())))
 }
 
 fn proposal_notebook(app: &App, id: &str) -> Result<String, Fail> {

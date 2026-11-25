@@ -3,6 +3,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
+use chromiumoxide::cdp::browser_protocol::emulation::SetDeviceMetricsOverrideParams;
 use chromiumoxide::cdp::browser_protocol::web_authn::{
     AddVirtualAuthenticatorParams, AuthenticatorProtocol, AuthenticatorTransport, EnableParams,
     VirtualAuthenticatorOptions,
@@ -330,6 +331,121 @@ async fn a_session_started_under_the_units_path_keeps_running_while_notebooks_op
 
     let listed = ui.text("form[action=\"/sessions/sh/stop\"]").await;
     assert!(!listed.is_empty(), "sh is not running: {}", ui.text("body").await);
+}
+
+#[tokio::test]
+async fn the_page_terminal_draws_in_a_monospace_font() {
+    let _one = ONE_BROWSER_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    create_bash_session(&ui, &server, "sh").await;
+
+    ui.open(&server.url("/sessions/sh/terminal")).await;
+    ui.wait_until("the terminal connected", "document.getElementById('terminal').dataset.state === 'connected'")
+        .await;
+
+    let widths: Value = ui
+        .eval(
+            "(() => { const rows = getComputedStyle(document.querySelector('.xterm-rows')); \
+             const width = text => { const probe = document.createElement('span'); \
+             probe.style.fontFamily = rows.fontFamily; probe.style.fontSize = rows.fontSize; \
+             probe.style.whiteSpace = 'pre'; probe.textContent = text.repeat(20); document.body.append(probe); \
+             const measured = probe.getBoundingClientRect().width; probe.remove(); return measured; }; \
+             return { i: width('i'), w: width('W') }; })()",
+        )
+        .await;
+    assert_eq!(widths["i"], widths["w"], "i and W differ in width: {widths}");
+}
+
+async fn window_height(server: &Server) -> u64 {
+    let output = tokio::process::Command::new("tmux")
+        .args(["-L", &server.socket, "display", "-p", "-t", "=sh:", "#{window_height}"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "tmux display: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).unwrap().trim().parse().unwrap()
+}
+
+const ROWS_FILL_THEIR_BOX: &str = "(() => { const box = document.getElementById('screen').getBoundingClientRect(); \
+    const drawn = document.querySelector('.xterm-screen').getBoundingClientRect(); \
+    const cell = drawn.height / document.querySelectorAll('.xterm-rows > div').length; \
+    return drawn.height > 0 && drawn.bottom <= box.bottom && drawn.right <= box.right \
+    && box.bottom - drawn.bottom < cell + 4.5; })()";
+
+#[tokio::test]
+async fn a_shorter_window_refits_the_terminal_whole_and_the_session_follows() {
+    let _one = ONE_BROWSER_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    create_bash_session(&ui, &server, "sh").await;
+    ui.open(&server.url("/sessions/sh/terminal")).await;
+    ui.wait_until("the terminal connected", "document.getElementById('terminal').dataset.state === 'connected'")
+        .await;
+    ui.wait_until("the rows fill their box", ROWS_FILL_THEIR_BOX).await;
+
+    for height in (500..=532).rev() {
+        ui.page.execute(SetDeviceMetricsOverrideParams::new(390, height, 2.0, true)).await.unwrap();
+        ui.wait_until(&format!("the rows fill their box in a window {height} high"), ROWS_FILL_THEIR_BOX).await;
+    }
+    let rows: u64 = ui.eval("document.querySelectorAll('.xterm-rows > div').length").await;
+    let below_the_status_line = rows - 1;
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let height = window_height(&server).await;
+        if height == below_the_status_line {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the session stayed {height} rows, the page has {rows}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
+#[tokio::test]
+async fn typing_into_the_page_terminal_runs_in_the_session_and_its_output_shows_in_the_rows() {
+    let _one = ONE_BROWSER_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    create_bash_session(&ui, &server, "sh").await;
+    ui.wait_until("the Terminal link", "!!document.querySelector('a[href=\"/sessions/sh/terminal\"][target=_blank]')")
+        .await;
+
+    ui.open(&server.url("/sessions/sh/terminal")).await;
+    ui.wait_until("the terminal connected", "document.getElementById('terminal').dataset.state === 'connected'")
+        .await;
+    ui.click(".xterm").await;
+    let keyboard = ui.page.find_element(".xterm-helper-textarea").await.unwrap();
+    keyboard.type_str("echo e2e-ok").await.unwrap();
+    keyboard.press_key("Enter").await.unwrap();
+
+    ui.wait_until(
+        "e2e-ok on a row of its own",
+        "[...document.querySelectorAll('.xterm-rows > div')].some(row => row.textContent.trim() === 'e2e-ok')",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn on_a_phone_the_key_row_sits_inside_the_window_below_the_terminal() {
+    let _one = ONE_BROWSER_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    create_bash_session(&ui, &server, "sh").await;
+    let phone = SetDeviceMetricsOverrideParams::new(390, 844, 2.0, true);
+    ui.page.execute(phone).await.unwrap();
+
+    ui.open(&server.url("/sessions/sh/terminal")).await;
+    ui.wait_until("the terminal connected", "document.getElementById('terminal').dataset.state === 'connected'")
+        .await;
+
+    let layout: Value = ui
+        .eval(
+            "(() => { const keys = document.getElementById('keys').getBoundingClientRect(); \
+             const xterm = document.querySelector('.xterm').getBoundingClientRect(); \
+             return { window: innerHeight, page: document.documentElement.scrollHeight, \
+             keys_top: keys.top, keys_bottom: keys.bottom, xterm_bottom: xterm.bottom }; })()",
+        )
+        .await;
+    let at = |key: &str| layout[key].as_f64().unwrap();
+    assert!(at("page") <= at("window"), "the page scrolls: {layout}");
+    assert!(at("keys_bottom") <= at("window"), "the key row ends below the window: {layout}");
+    assert!(at("xterm_bottom") <= at("keys_top"), "the terminal covers the key row: {layout}");
 }
 
 #[tokio::test]
