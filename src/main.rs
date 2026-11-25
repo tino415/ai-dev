@@ -51,6 +51,7 @@ async fn serve() -> Result<(), String> {
     let origin = origin();
     let socket = std::env::var("AI_DEV_TMUX_SOCKET").unwrap_or_else(|_| DEFAULT_TMUX_SOCKET.into());
     let core = Core::open(&dir, &origin, &socket)?;
+    core.restore_detached_sizes().await;
     let auth = std::sync::Arc::new(Auth::new(&dir, &origin, &agent_token_file())?);
     let origin_host = origin
         .split("://")

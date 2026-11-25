@@ -23,8 +23,9 @@
   }
 
   function withStickyCtrl(data) {
-    if (!ctrl || data.length !== 1) return data;
+    if (!ctrl) return data;
     setCtrl(false);
+    if (data.length !== 1) return data;
     const code = data.toUpperCase().charCodeAt(0);
     return code >= 64 && code <= 95 ? String.fromCharCode(code - 64) : data;
   }
@@ -60,6 +61,11 @@
     term.blur();
   }
 
+  async function sessionIsStopped() {
+    const page = await fetch(location.href).then(response => response.text()).catch(() => '');
+    return page.includes('data-state="stopped"');
+  }
+
   function disconnected() {
     show('disconnected', 'disconnected');
     byId('disconnected').hidden = false;
@@ -88,7 +94,9 @@
     socket = new WebSocket(`${scheme}://${location.host}${path}?cols=${term.cols}&rows=${term.rows}`);
     socket.binaryType = 'arraybuffer';
     let stopped = false;
+    let opened = false;
     socket.onopen = () => {
+      opened = true;
       show('connected', 'connected');
       sendSize();
       term.focus();
@@ -102,9 +110,11 @@
         sessionStopped();
       }
     };
-    socket.onclose = () => {
+    socket.onclose = async () => {
       socket = null;
-      if (!stopped && root.dataset.state !== 'closed') disconnected();
+      if (stopped || root.dataset.state === 'closed') return;
+      if (!opened && await sessionIsStopped()) sessionStopped();
+      else disconnected();
     };
   }
 

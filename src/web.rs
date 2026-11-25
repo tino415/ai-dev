@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
@@ -10,6 +11,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
+use futures::stream::SplitSink;
 use futures::{stream, SinkExt, Stream, StreamExt};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -666,6 +668,8 @@ fn parse_policy(text: &str) -> Policy {
 // terminal
 
 const SCREEN_READ: usize = 16 * 1024;
+const PING_EVERY: Duration = Duration::from_secs(20);
+const PAGE_SILENCE_LIMIT: Duration = Duration::from_secs(60);
 const LARGEST_SIDE: u16 = 1000;
 
 async fn terminal_page(State(app): State<App>, Path(name): Path<String>) -> Result<Html<String>, Fail> {
@@ -720,7 +724,9 @@ async fn pump_terminal(core: Arc<Core>, session: String, size: TerminalSize, soc
     let (pty, client) = match core.attach_terminal(&session, size).await {
         Ok(attached) => attached,
         Err(_) => {
-            let _ = to_page.send(state_frame(json!({ "session": "stopped" }))).await;
+            if !core.is_running(&session).await {
+                send_within_deadline(&mut to_page, state_frame(json!({ "session": "stopped" }))).await;
+            }
             return;
         }
     };
@@ -728,34 +734,47 @@ async fn pump_terminal(core: Arc<Core>, session: String, size: TerminalSize, soc
     let mut changes = core.subscribe();
     let mut running_block = core.running_block_in(&session);
     let mut bytes = vec![0u8; SCREEN_READ];
-    let _ = to_page.send(state_frame(json!({ "running_block": running_block }))).await;
+    let mut ping = tokio::time::interval(PING_EVERY);
+    let mut last_heard = tokio::time::Instant::now();
+    send_within_deadline(&mut to_page, state_frame(json!({ "running_block": running_block }))).await;
     loop {
         tokio::select! {
             read = screen.read(&mut bytes) => {
                 let Ok(count @ 1..) = read else {
                     if !core.is_running(&session).await {
-                        let _ = to_page.send(state_frame(json!({ "session": "stopped" }))).await;
+                        send_within_deadline(&mut to_page, state_frame(json!({ "session": "stopped" }))).await;
                     }
                     break;
                 };
-                if to_page.send(Message::Binary(bytes[..count].to_vec().into())).await.is_err() {
+                if !send_within_deadline(&mut to_page, Message::Binary(bytes[..count].to_vec().into())).await {
                     break;
                 }
             }
-            frame = from_page.next() => match frame {
-                Some(Ok(Message::Binary(typed))) => {
-                    if keyboard.write_all(&typed).await.is_err() {
-                        break;
-                    }
+            _ = ping.tick() => {
+                if last_heard.elapsed() > PAGE_SILENCE_LIMIT
+                    || !send_within_deadline(&mut to_page, Message::Ping(Default::default())).await
+                {
+                    break;
                 }
-                Some(Ok(Message::Text(text))) => {
-                    if let Ok(PageFrame { resize: Some(size) }) = serde_json::from_str(&text) {
-                        let _ = keyboard.resize(pty_size(size.into()));
+            }
+            frame = from_page.next() => {
+                let Some(Ok(frame)) = frame else { break };
+                last_heard = tokio::time::Instant::now();
+                match frame {
+                    Message::Binary(typed) => {
+                        if keyboard.write_all(&typed).await.is_err() {
+                            break;
+                        }
                     }
+                    Message::Text(text) => {
+                        if let Ok(PageFrame { resize: Some(size) }) = serde_json::from_str(&text) {
+                            let _ = keyboard.resize(pty_size(size.into()));
+                        }
+                    }
+                    Message::Close(_) => break,
+                    Message::Ping(_) | Message::Pong(_) => {}
                 }
-                Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
-                Some(Ok(_)) => {}
-            },
+            }
             change = changes.recv() => {
                 let affects_sessions = matches!(change, Ok(Change::Sessions) | Err(RecvError::Lagged(_)));
                 let affects_blocks = matches!(change, Ok(Change::Block { .. }) | Err(RecvError::Lagged(_)));
@@ -763,13 +782,13 @@ async fn pump_terminal(core: Arc<Core>, session: String, size: TerminalSize, soc
                     break;
                 }
                 if affects_sessions && !core.is_running(&session).await {
-                    let _ = to_page.send(state_frame(json!({ "session": "stopped" }))).await;
+                    send_within_deadline(&mut to_page, state_frame(json!({ "session": "stopped" }))).await;
                     break;
                 }
                 let now_running = core.running_block_in(&session);
                 if affects_blocks && now_running != running_block {
                     running_block = now_running;
-                    if to_page.send(state_frame(json!({ "running_block": running_block }))).await.is_err() {
+                    if !send_within_deadline(&mut to_page, state_frame(json!({ "running_block": running_block }))).await {
                         break;
                     }
                 }
@@ -782,6 +801,10 @@ async fn pump_terminal(core: Arc<Core>, session: String, size: TerminalSize, soc
 
 fn state_frame(state: Value) -> Message {
     Message::Text(state.to_string().into())
+}
+
+async fn send_within_deadline(to_page: &mut SplitSink<WebSocket, Message>, message: Message) -> bool {
+    matches!(tokio::time::timeout(PAGE_SILENCE_LIMIT, to_page.send(message)).await, Ok(Ok(())))
 }
 
 fn proposal_notebook(app: &App, id: &str) -> Result<String, Fail> {

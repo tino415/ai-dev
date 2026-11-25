@@ -383,6 +383,14 @@ impl Core {
         self.touch(name);
     }
 
+    pub async fn restore_detached_sizes(&self) {
+        for def in self.session_defs() {
+            if self.is_running(&def.name).await {
+                self.tmux.restore_size(&def.name).await;
+            }
+        }
+    }
+
     pub fn running_block_in(&self, session: &str) -> Option<String> {
         self.state()
             .blocks
