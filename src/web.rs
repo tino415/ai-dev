@@ -183,6 +183,7 @@ async fn create_notebook(State(app): State<App>, Form(form): Form<NameForm>) -> 
 
 async fn notebook_page(State(app): State<App>, Path(name): Path<String>) -> Result<Html<String>, Fail> {
     existing_notebook(&app, &name)?;
+    app.core.load_notebook_file_if_changed(&name);
     Ok(Html(crate::html::notebook_page(
         &name,
         &notebook_view::subtitle(&app.core, &name),
@@ -231,6 +232,9 @@ async fn events_for(
     let parts = match change {
         Err(BroadcastStreamRecvError::Lagged(_)) => {
             return vec![Ok(Event::default().event("stale").data("missed changes"))];
+        }
+        Ok(Change::NotebookLoaded { notebook: n }) if n == notebook => {
+            return vec![Ok(Event::default().event("stale").data("loaded from disk"))];
         }
         Ok(Change::BlockAdded { notebook: n, id }) if n == notebook => vec![("block-added".to_string(), Part::Block(id))],
         Ok(Change::Block { notebook: n, id }) if n == notebook => vec![(format!("b-{id}"), Part::Block(id))],
@@ -502,6 +506,7 @@ async fn sessions_page(State(app): State<App>) -> Html<String> {
 <div class=\"policy\">{status} · {policy} · start: <code>{start}</code></div>{attach}\
 <form method=\"post\" action=\"/sessions/{n}/policy\" class=\"row policy\">run <select name=\"run_policy\">{run}</select> \
 read <select name=\"read_policy\">{read}</select> idle minutes <input name=\"idle_minutes\" size=\"4\" value=\"{idle}\"> \
+block seconds <input name=\"block_seconds\" size=\"4\" value=\"{block}\" placeholder=\"none\"> \
 profile <input name=\"profile\" size=\"8\" value=\"{profile}\"><button data-working=\"Saving…\">Save</button></form></div>\
 <div class=\"row\"><form method=\"post\" action=\"/sessions/{n}/{toggle}\"><button data-working=\"{working}\">{toggle}</button></form>\
 <form method=\"post\" action=\"/sessions/{n}/delete\"><button class=\"no\" data-working=\"Deleting…\">delete</button></form></div></div>",
@@ -514,6 +519,7 @@ profile <input name=\"profile\" size=\"8\" value=\"{profile}\"><button data-work
                 run = policy_options(def.run_policy),
                 read = policy_options(def.read_policy),
                 idle = def.idle_timeout_secs / 60,
+                block = def.block_timeout_secs.map(|secs| secs.to_string()).unwrap_or_default(),
                 profile = esc(&def.profile.clone().unwrap_or_default()),
             )
         })
@@ -610,6 +616,7 @@ struct PolicyForm {
     run_policy: String,
     read_policy: String,
     idle_minutes: u64,
+    block_seconds: Option<String>,
     profile: Option<String>,
 }
 
@@ -618,9 +625,22 @@ async fn update_session(State(app): State<App>, Path(name): Path<String>, Form(f
     def.run_policy = parse_policy(&form.run_policy);
     def.read_policy = parse_policy(&form.read_policy);
     def.idle_timeout_secs = form.idle_minutes.max(1) * 60;
+    if let Some(block_seconds) = &form.block_seconds {
+        def.block_timeout_secs = parse_block_seconds(block_seconds)?;
+    }
     def.profile = form.profile.filter(|p| !p.is_empty());
     app.core.save_session(def).map_err(bad)?;
     Ok(Redirect::to("/sessions"))
+}
+
+fn parse_block_seconds(text: &str) -> Result<Option<u64>, Fail> {
+    match text.trim() {
+        "" => Ok(None),
+        seconds => match seconds.parse::<u64>() {
+            Ok(seconds) if seconds > 0 => Ok(Some(seconds)),
+            _ => Err(bad("block seconds is a whole number above 0, or empty for no limit".into())),
+        },
+    }
 }
 
 fn parse_policy(text: &str) -> Policy {

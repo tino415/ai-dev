@@ -22,15 +22,18 @@ impl Drop for Harness {
 fn harness() -> Harness {
     let dir = tempfile::tempdir().unwrap();
     let socket = format!("aidev-test-{}", short_id());
-    let core = Core::open(dir.path(), "http://localhost:7471", &socket)
-        .unwrap()
-        .with_block_timeout(Duration::from_secs(20));
+    let core = Core::open(dir.path(), "http://localhost:7471", &socket).unwrap();
     Harness { dir, core, socket }
 }
 
 async fn bash_session(core: &Arc<Core>, name: &str) {
-    core.save_session(SessionDef::from_preset(name, Preset::Bash, "bash --norc", &[]))
-        .unwrap();
+    bash_session_with_block_limit(core, name, Some(20)).await;
+}
+
+async fn bash_session_with_block_limit(core: &Arc<Core>, name: &str, block_timeout_secs: Option<u64>) {
+    let mut def = SessionDef::from_preset(name, Preset::Bash, "bash --norc", &[]);
+    def.block_timeout_secs = block_timeout_secs;
+    core.save_session(def).unwrap();
     core.start_session(name).await.unwrap();
 }
 
@@ -481,6 +484,202 @@ async fn a_deleted_block_that_has_run_leaves_the_page_and_the_notebook_file() {
     assert!(!file.contains("deleteme"));
     let view = ai_dev::notebook_view::render(&h.core, "nb", ai_dev::notebook_view::Part::Block(block.id.clone())).await;
     assert!(view.contains(" hidden></div>") && !view.contains("deleteme"), "{view}");
+}
+
+fn notebook_file(h: &Harness) -> std::path::PathBuf {
+    h.dir.path().join("notebooks/nb.md")
+}
+
+#[tokio::test]
+async fn creating_a_notebook_over_an_existing_file_keeps_its_blocks() {
+    let h = harness();
+    let text = "# nb\n\n```sh session=sh author=human id=abc\necho from-git\n```\n";
+    std::fs::create_dir_all(h.dir.path().join("notebooks")).unwrap();
+    std::fs::write(notebook_file(&h), text).unwrap();
+
+    h.core.create_notebook("nb").unwrap();
+
+    let blocks = h.core.blocks("nb");
+    assert_eq!(blocks.len(), 1);
+    assert_eq!((blocks[0].id.as_str(), blocks[0].code.as_str()), ("abc", "echo from-git"));
+    assert_eq!(blocks[0].state, BlockState::Saved);
+    assert_eq!(std::fs::read_to_string(notebook_file(&h)).unwrap(), text);
+}
+
+#[tokio::test]
+async fn a_press_after_the_file_changed_loads_it_and_runs_nothing() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo before", "agent-a").unwrap();
+    let edited = format!("# nb\n\n```sh session=sh author=agent-a id={}\necho edited-on-disk\n```\n", block.id);
+    std::fs::write(notebook_file(&h), &edited).unwrap();
+
+    let error = h.core.approve_run(&block.id, None, None).err().unwrap();
+
+    assert_eq!(error, "nb.md changed on disk. It was loaded again and nothing ran.");
+    assert_eq!(std::fs::read_to_string(notebook_file(&h)).unwrap(), edited);
+    let loaded = h.core.block(&block.id).unwrap();
+    assert_eq!((loaded.state, loaded.code.as_str()), (BlockState::Saved, "echo edited-on-disk"));
+}
+
+#[tokio::test]
+async fn a_block_whose_text_did_not_change_keeps_its_output_through_a_load() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo kept-output", HUMAN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    let finished = wait_for(&h.core, &block.id, BlockState::Finished).await;
+    let written = std::fs::read_to_string(notebook_file(&h)).unwrap();
+    let added = "\n```sh session=sh author=human id=added\necho new\n```\n";
+    std::fs::write(notebook_file(&h), format!("{written}{added}")).unwrap();
+
+    h.core.load_notebook_file_if_changed("nb");
+
+    let blocks = h.core.blocks("nb");
+    assert_eq!(blocks.len(), 2);
+    assert_eq!((blocks[0].state, &blocks[0].output), (BlockState::Finished, &finished.output));
+    assert_eq!((blocks[1].id.as_str(), blocks[1].state), ("added", BlockState::Saved));
+}
+
+#[tokio::test]
+async fn a_file_with_a_repeated_id_is_refused_and_not_written() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let kept = h.core.add_block("nb", "sh", "echo kept", "agent-a").unwrap();
+    let repeated = "# nb\n\n```sh session=sh author=human id=abc\nls\n```\n\n```sh session=sh author=human id=abc\npwd\n```\n";
+    std::fs::write(notebook_file(&h), repeated).unwrap();
+
+    let error = h.core.add_block("nb", "sh", "echo more", HUMAN).err().unwrap();
+
+    assert_eq!(error, "nb.md: block id abc is used twice");
+    assert_eq!(std::fs::read_to_string(notebook_file(&h)).unwrap(), repeated);
+    let blocks = h.core.blocks("nb");
+    assert_eq!((blocks.len(), blocks[0].id.as_str()), (1, kept.id.as_str()));
+}
+
+#[tokio::test]
+async fn an_agents_block_with_a_why_on_two_lines_keeps_its_output_through_a_load() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.propose_block("nb", "sh", "echo kept", "agent-a", "check the\nlogs").unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    wait_for(&h.core, &block.id, BlockState::Finished).await;
+    let written = std::fs::read_to_string(notebook_file(&h)).unwrap();
+    std::fs::write(notebook_file(&h), format!("{written}\n```sh session=sh author=human id=added\nls\n```\n")).unwrap();
+
+    h.core.load_notebook_file_if_changed("nb");
+
+    assert_eq!(h.core.block(&block.id).unwrap().state, BlockState::Finished);
+}
+
+#[tokio::test]
+async fn a_notebook_over_a_copy_of_another_notebooks_file_is_not_loaded() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    h.core.save_session(SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &[])).unwrap();
+    let block = h.core.add_block("nb", "sh", "echo original", "agent-a").unwrap();
+    std::fs::copy(notebook_file(&h), h.dir.path().join("notebooks/copy.md")).unwrap();
+
+    h.core.create_notebook("copy").unwrap();
+
+    let expected = format!("copy.md: block id {} is used in notebook nb", block.id);
+    assert_eq!(h.core.notebook_file_error("copy"), Some(expected));
+    assert!(h.core.blocks("copy").is_empty());
+}
+
+#[tokio::test]
+async fn a_missing_file_keeps_the_blocks_and_is_not_written() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    h.core.save_session(SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &[])).unwrap();
+    let block = h.core.add_block("nb", "sh", "echo kept", "agent-a").unwrap();
+    std::fs::remove_file(notebook_file(&h)).unwrap();
+
+    let error = h.core.add_block("nb", "sh", "echo more", HUMAN).err().unwrap();
+
+    assert_eq!(error, "nb.md is missing");
+    assert!(!notebook_file(&h).exists());
+    assert_eq!(h.core.blocks("nb").len(), 1);
+    assert_eq!(h.core.block(&block.id).unwrap().state, BlockState::Pending);
+}
+
+#[tokio::test]
+async fn a_rejected_block_and_its_note_survive_a_load() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    h.core.save_session(SessionDef::from_preset("sh", Preset::Bash, "bash --norc", &[])).unwrap();
+    let block = h.core.add_block("nb", "sh", "echo no", "agent-a").unwrap();
+    h.core.reject_block(&block.id, Some("use the replica".into())).unwrap();
+    std::fs::write(notebook_file(&h), "# nb\n\n```sh session=sh author=human id=added\nls\n```\n").unwrap();
+
+    h.core.load_notebook_file_if_changed("nb");
+
+    let rejected = h.core.block(&block.id).unwrap();
+    assert_eq!((rejected.state, rejected.note.as_deref()), (BlockState::Rejected, Some("use the replica")));
+}
+
+#[tokio::test]
+async fn a_block_limit_too_large_for_the_clock_means_no_limit() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session_with_block_limit(&h.core, "sh", Some(u64::MAX)).await;
+
+    let block = h.core.add_block("nb", "sh", "echo fine", HUMAN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+
+    wait_for(&h.core, &block.id, BlockState::Finished).await;
+}
+
+#[tokio::test]
+async fn a_block_in_a_session_with_no_limit_runs_past_one_second() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session_with_block_limit(&h.core, "sh", None).await;
+
+    let block = h.core.add_block("nb", "sh", "sleep 2; echo late", HUMAN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert!(done.output.unwrap().trim_end().ends_with("\nlate"));
+}
+
+#[tokio::test]
+async fn a_block_in_a_session_with_a_one_second_limit_fails_without_its_end_marker() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session_with_block_limit(&h.core, "sh", Some(1)).await;
+
+    let block = h.core.add_block("nb", "sh", "sleep 3", HUMAN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    let failed = wait_for(&h.core, &block.id, BlockState::Failed).await;
+
+    let output = failed.output.unwrap();
+    assert_eq!(output.lines().next(), Some("no end marker after 1s, the session may still be busy"));
+}
+
+#[tokio::test]
+#[ignore = "runs for 130 s"]
+async fn a_block_in_a_session_with_no_limit_runs_sleep_130_to_its_end() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session_with_block_limit(&h.core, "sh", None).await;
+
+    let block = h.core.add_block("nb", "sh", "sleep 130; echo slept", HUMAN).unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    for _ in 0..1400 {
+        if h.core.block(&block.id).unwrap().state == BlockState::Finished {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let done = h.core.block(&block.id).unwrap();
+    assert_eq!(done.state, BlockState::Finished, "{:?}", done.output);
+    assert!(done.output.unwrap().trim_end().ends_with("\nslept"));
 }
 
 #[tokio::test]

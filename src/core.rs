@@ -15,7 +15,6 @@ use crate::vars;
 
 pub type Result<T> = std::result::Result<T, String>;
 
-pub const BLOCK_TIMEOUT: Duration = Duration::from_secs(120);
 const START_SETTLE: Duration = Duration::from_millis(500);
 const OUTPUT_POLL: Duration = Duration::from_millis(100);
 const LIVENESS_CHECK: Duration = Duration::from_secs(1);
@@ -32,6 +31,7 @@ pub enum Change {
     Proposals,
     Agents { notebook: String },
     Variables,
+    NotebookLoaded { notebook: String },
 }
 
 pub struct Admission {
@@ -48,10 +48,23 @@ struct State {
     persisted: Persisted,
     vars: Variables,
     blocks: Vec<Block>,
+    files: HashMap<String, NotebookFile>,
     last_activity: HashMap<String, Instant>,
     proposals: Vec<SessionProposal>,
     joins: Vec<JoinRequest>,
     running: HashMap<String, RunningBlock>,
+}
+
+#[derive(Default)]
+struct NotebookFile {
+    text_as_last_read_or_written: String,
+    unloadable: Option<String>,
+}
+
+enum OnDisk {
+    AsRemembered,
+    LoadedAgain,
+    Unloadable(String),
 }
 
 struct RunningBlock {
@@ -71,7 +84,6 @@ pub struct Core {
     dir: PathBuf,
     origin: String,
     tmux: Tmux,
-    block_timeout: Duration,
     state: Mutex<State>,
     session_locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
     changes: broadcast::Sender<Change>,
@@ -122,20 +134,15 @@ impl Core {
             keep_the_latest_token_per_agent(notebook);
         }
         let vars: Variables = read_json(&dir.join("variables.json"))?;
-        let blocks = persisted
-            .notebooks
-            .iter()
-            .flat_map(|notebook| load_blocks(dir, &notebook.name))
-            .collect();
-        Ok(Arc::new(Core {
+        let core = Core {
             dir: dir.to_path_buf(),
             origin: origin.trim_end_matches('/').to_string(),
             tmux: Tmux::new(tmux_socket, &dir.join("runtime")),
-            block_timeout: BLOCK_TIMEOUT,
             state: Mutex::new(State {
                 persisted,
                 vars,
-                blocks,
+                blocks: Vec::new(),
+                files: HashMap::new(),
                 last_activity: HashMap::new(),
                 proposals: Vec::new(),
                 joins: Vec::new(),
@@ -144,15 +151,14 @@ impl Core {
             session_locks: Mutex::new(HashMap::new()),
             changes: broadcast::channel(CHANGES_BUFFERED).0,
             changes_sent: AtomicU64::new(0),
-        }))
-    }
-
-    pub fn with_block_timeout(self: Arc<Self>, timeout: Duration) -> Arc<Core> {
-        let core = Arc::into_inner(self).expect("core is not shared yet");
-        Arc::new(Core {
-            block_timeout: timeout,
-            ..core
-        })
+        };
+        let mut state = core.state();
+        let names: Vec<String> = state.persisted.notebooks.iter().map(|n| n.name.clone()).collect();
+        for name in names {
+            core.compare_with_disk(&mut state, &name);
+        }
+        drop(state);
+        Ok(Arc::new(core))
     }
 
     pub fn dir(&self) -> &Path {
@@ -207,7 +213,19 @@ impl Core {
             ..Notebook::default()
         });
         self.save_state(&state)?;
-        self.save_notebook(&state, name)
+        if self.notebook_file(name).exists() {
+            self.compare_with_disk(&mut state, name);
+            return Ok(());
+        }
+        self.save_notebook(&mut state, name)
+    }
+
+    pub fn load_notebook_file_if_changed(&self, notebook: &str) {
+        self.compare_with_disk(&mut self.state(), notebook);
+    }
+
+    pub fn notebook_file_error(&self, notebook: &str) -> Option<String> {
+        self.state().files.get(notebook).and_then(|file| file.unloadable.clone())
     }
 
     pub fn notebooks(&self) -> Vec<Notebook> {
@@ -528,20 +546,22 @@ impl Core {
             .find(|s| s.name == session)
             .map(|s| s.run_policy)
             .ok_or("unknown session")?;
+        notebook_mut(&mut state, notebook)?;
+        self.file_as_remembered(&mut state, notebook)?;
         let entry = notebook_mut(&mut state, notebook)?;
         let first_use = !entry.sessions.iter().any(|s| s == session);
         if first_use {
             entry.sessions.push(session.to_string());
         }
         let mut block = Block::new(notebook, session, &normalize_newlines(code), author);
-        block.why = why;
+        block.why = why.map(|why| notebook_file::one_line(&why));
         let auto = block.proposed_by_agent() && policy == Policy::Auto;
         if auto {
             block.state = BlockState::Queued;
         }
         state.blocks.push(block.clone());
         self.save_state(&state)?;
-        self.save_notebook(&state, notebook)?;
+        self.save_notebook(&mut state, notebook)?;
         drop(state);
         self.notify(Change::BlockAdded {
             notebook: notebook.to_string(),
@@ -557,12 +577,8 @@ impl Core {
     }
 
     pub fn rerun_block(self: &Arc<Self>, id: &str) -> Result<()> {
-        let note = self.reset_for_rerun(id)?;
-        self.approve_run(id, None, note)
-    }
-
-    fn reset_for_rerun(&self, id: &str) -> Result<Option<String>> {
         let mut state = self.state();
+        self.block_file_as_remembered(&mut state, id)?;
         let block = block_mut(&mut state, id)?;
         if !matches!(block.state, BlockState::Finished | BlockState::Failed) {
             return Err("block has not finished".into());
@@ -571,11 +587,16 @@ impl Core {
         block.output = None;
         block.hidden_input_sent = false;
         block.read = ReadDecision::Undecided;
-        Ok(block.note.clone())
+        let note = block.note.clone();
+        self.queue_run(state, id, None, note)
     }
 
     pub async fn start_and_run(self: &Arc<Self>, id: &str) -> Result<()> {
-        let block = self.block(id).ok_or("unknown block")?;
+        let block = {
+            let mut state = self.state();
+            self.block_file_as_remembered(&mut state, id)?;
+            block_mut(&mut state, id)?.clone()
+        };
         if !matches!(block.state, BlockState::Pending | BlockState::Saved) {
             return Err("block is not waiting for a run".into());
         }
@@ -599,6 +620,17 @@ impl Core {
 
     pub fn approve_run(self: &Arc<Self>, id: &str, edited_code: Option<String>, note: Option<String>) -> Result<()> {
         let mut state = self.state();
+        self.block_file_as_remembered(&mut state, id)?;
+        self.queue_run(state, id, edited_code, note)
+    }
+
+    fn queue_run(
+        self: &Arc<Self>,
+        mut state: MutexGuard<'_, State>,
+        id: &str,
+        edited_code: Option<String>,
+        note: Option<String>,
+    ) -> Result<()> {
         let block = block_mut(&mut state, id)?;
         if !matches!(block.state, BlockState::Pending | BlockState::Saved) {
             return Err("block is not waiting for a run".into());
@@ -611,7 +643,7 @@ impl Core {
         block.state = BlockState::Queued;
         block.session_stopped = false;
         let notebook = block.notebook.clone();
-        self.save_notebook(&state, &notebook)?;
+        self.save_notebook(&mut state, &notebook)?;
         drop(state);
         self.notify_block(&notebook, id);
         self.spawn_execution(id);
@@ -620,6 +652,7 @@ impl Core {
 
     pub fn reject_block(&self, id: &str, note: Option<String>) -> Result<()> {
         let mut state = self.state();
+        self.block_file_as_remembered(&mut state, id)?;
         let block = block_mut(&mut state, id)?;
         if !matches!(block.state, BlockState::Pending | BlockState::Saved) {
             return Err("block is not waiting for a run".into());
@@ -627,7 +660,7 @@ impl Core {
         block.state = BlockState::Rejected;
         block.note = note.filter(|n| !n.trim().is_empty());
         let notebook = block.notebook.clone();
-        self.save_notebook(&state, &notebook)?;
+        self.save_notebook(&mut state, &notebook)?;
         drop(state);
         self.notify_block(&notebook, id);
         Ok(())
@@ -635,10 +668,11 @@ impl Core {
 
     pub fn delete_block(&self, id: &str) -> Result<()> {
         let mut state = self.state();
-        let block = block_mut(&mut state, id)?;
-        if block.state == BlockState::Deleted {
+        if block_mut(&mut state, id)?.state == BlockState::Deleted {
             return Ok(());
         }
+        self.block_file_as_remembered(&mut state, id)?;
+        let block = block_mut(&mut state, id)?;
         if !matches!(block.state, BlockState::Finished | BlockState::Failed) {
             return Err("only a block that has run can be deleted".into());
         }
@@ -651,7 +685,7 @@ impl Core {
         block.read = ReadDecision::Undecided;
         block.hidden_input_sent = false;
         let notebook = block.notebook.clone();
-        self.save_notebook(&state, &notebook)?;
+        self.save_notebook(&mut state, &notebook)?;
         drop(state);
         self.notify_block(&notebook, id);
         Ok(())
@@ -686,7 +720,7 @@ impl Core {
     async fn execute_block(&self, id: &str) {
         let Some(block) = self.block(id) else { return };
         let Some(def) = self.session(&block.session) else {
-            return self.finish_block(id, Err("session was deleted".into()), &VariableSet::new());
+            return self.finish_block(&block, Err("session was deleted".into()), &VariableSet::new());
         };
         if !self.is_running(&def.name).await {
             self.set_block_state(id, BlockState::Pending);
@@ -699,7 +733,7 @@ impl Core {
         self.set_block_state(id, BlockState::Running);
         let result = self.run_text(Some(id), &def, &set, &block.code).await;
         self.state().running.remove(id);
-        self.finish_block(id, result, &set);
+        self.finish_block(&block, result, &set);
     }
 
     pub async fn send_hidden_input(&self, id: &str, value: &str) -> Result<()> {
@@ -796,15 +830,23 @@ impl Core {
             .replace(HIDDEN_INPUT_PLACEHOLDER, HIDDEN_INPUT_SENT)
     }
 
-    fn finish_block(&self, id: &str, result: Result<String>, set: &VariableSet) {
+    fn finish_block(&self, ran: &Block, result: Result<String>, set: &VariableSet) {
+        let id = ran.id.as_str();
         let mut state = self.state();
         let read_policy = state
-            .blocks
+            .persisted
+            .sessions
             .iter()
-            .find(|b| b.id == id)
-            .and_then(|b| state.persisted.sessions.iter().find(|s| s.name == b.session))
+            .find(|s| s.name == ran.session)
             .map(|s| s.read_policy);
         let Ok(block) = block_mut(&mut state, id) else { return };
+        let notebook = block.notebook.clone();
+        if !block.has_the_text_of(ran) {
+            block.state = BlockState::Saved;
+            block.output = None;
+            drop(state);
+            return self.notify_block(&notebook, id);
+        }
         match result {
             Ok(output) => {
                 block.output = Some(output);
@@ -818,7 +860,6 @@ impl Core {
         if read_policy == Some(Policy::Auto) && block.proposed_by_agent() {
             block.read = ReadDecision::Released;
         }
-        let notebook = block.notebook.clone();
         drop(state);
         self.notify_block(&notebook, id);
     }
@@ -854,7 +895,9 @@ impl Core {
         self.tmux.type_lines(&def.name, &rendered).await?;
         self.tmux.type_lines(&def.name, &typed).await?;
         self.touch(&def.name);
-        let deadline = Instant::now() + self.block_timeout;
+        let deadline = def
+            .block_timeout_secs
+            .and_then(|secs| Some((secs, Instant::now().checked_add(Duration::from_secs(secs))?)));
         let mut next_liveness_check = Instant::now() + LIVENESS_CHECK;
         loop {
             self.touch(&def.name);
@@ -878,10 +921,9 @@ impl Core {
                 }
                 next_liveness_check = Instant::now() + LIVENESS_CHECK;
             }
-            if Instant::now() >= deadline {
+            if let Some((secs, _)) = deadline.filter(|(_, at)| Instant::now() >= *at) {
                 return Err(format!(
-                    "no end marker after {}s, the session may still be busy\n{}",
-                    self.block_timeout.as_secs(),
+                    "no end marker after {secs}s, the session may still be busy\n{}",
                     output_so_far()
                 ));
             }
@@ -1062,18 +1104,67 @@ impl Core {
         Ok(())
     }
 
-    fn save_notebook(&self, state: &State, notebook: &str) -> Result<()> {
+    fn save_notebook(&self, state: &mut State, notebook: &str) -> Result<()> {
         let blocks: Vec<Block> = state
             .blocks
             .iter()
             .filter(|b| b.notebook == notebook)
             .cloned()
             .collect();
-        std::fs::write(
-            notebook_path(&self.dir, notebook),
-            notebook_file::serialize(notebook, &blocks),
-        )
-        .map_err(|e| e.to_string())
+        let text = notebook_file::serialize(notebook, &blocks);
+        std::fs::write(notebook_path(&self.dir, notebook), &text).map_err(|e| e.to_string())?;
+        state.files.insert(
+            notebook.to_string(),
+            NotebookFile {
+                text_as_last_read_or_written: text,
+                unloadable: None,
+            },
+        );
+        Ok(())
+    }
+
+    fn block_file_as_remembered(&self, state: &mut State, block_id: &str) -> Result<()> {
+        let notebook = block_mut(state, block_id)?.notebook.clone();
+        self.file_as_remembered(state, &notebook)
+    }
+
+    fn file_as_remembered(&self, state: &mut State, notebook: &str) -> Result<()> {
+        match self.compare_with_disk(state, notebook) {
+            OnDisk::AsRemembered => Ok(()),
+            OnDisk::LoadedAgain => Err(format!("{notebook}.md changed on disk. It was loaded again and nothing ran.")),
+            OnDisk::Unloadable(error) => Err(error),
+        }
+    }
+
+    fn compare_with_disk(&self, state: &mut State, notebook: &str) -> OnDisk {
+        let remembered = state.files.remove(notebook).unwrap_or_default();
+        let checked = read_notebook_text(&self.dir, notebook, &remembered.text_as_last_read_or_written)
+            .and_then(|text| loadable_blocks(state, notebook, &text).map(|saved| (text, saved)));
+        let (on_disk, text) = match checked {
+            Ok((text, _)) if text == remembered.text_as_last_read_or_written => (OnDisk::AsRemembered, text),
+            Ok((text, saved)) => {
+                load_blocks(state, notebook, saved);
+                (OnDisk::LoadedAgain, text)
+            }
+            Err(error) => (OnDisk::Unloadable(error), remembered.text_as_last_read_or_written),
+        };
+        let unloadable = match &on_disk {
+            OnDisk::Unloadable(error) => Some(error.clone()),
+            _ => None,
+        };
+        if matches!(on_disk, OnDisk::LoadedAgain) || unloadable != remembered.unloadable {
+            self.notify(Change::NotebookLoaded {
+                notebook: notebook.to_string(),
+            });
+        }
+        state.files.insert(
+            notebook.to_string(),
+            NotebookFile {
+                text_as_last_read_or_written: text,
+                unloadable,
+            },
+        );
+        on_disk
     }
 }
 
@@ -1136,18 +1227,60 @@ fn notebook_path(dir: &Path, notebook: &str) -> PathBuf {
     dir.join("notebooks").join(format!("{notebook}.md"))
 }
 
-fn load_blocks(dir: &Path, notebook: &str) -> Vec<Block> {
-    let text = std::fs::read_to_string(notebook_path(dir, notebook)).unwrap_or_default();
-    notebook_file::parse(&text)
-        .into_iter()
-        .map(|saved| {
-            let mut block = Block::new(notebook, &saved.session, &saved.code, &saved.author);
-            block.id = saved.id;
-            block.why = saved.why;
-            block.state = BlockState::Saved;
-            block
-        })
-        .collect()
+fn read_notebook_text(dir: &Path, notebook: &str, remembered: &str) -> Result<String> {
+    match std::fs::read_to_string(notebook_path(dir, notebook)) {
+        Ok(text) => Ok(text),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && remembered.is_empty() => Ok(String::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!("{notebook}.md is missing")),
+        Err(e) => Err(format!("{notebook}.md: {e}")),
+    }
+}
+
+fn loadable_blocks(state: &State, notebook: &str, text: &str) -> Result<Vec<notebook_file::SavedBlock>> {
+    let saved = notebook_file::parse(text).map_err(|error| error.message(notebook))?;
+    let elsewhere = saved
+        .iter()
+        .find_map(|saved| state.blocks.iter().find(|b| b.notebook != notebook && b.id == saved.id));
+    match elsewhere {
+        Some(block) => Err(format!("{notebook}.md: block id {} is used in notebook {}", block.id, block.notebook)),
+        None => Ok(saved),
+    }
+}
+
+fn load_blocks(state: &mut State, notebook: &str, saved: Vec<notebook_file::SavedBlock>) {
+    let (mut held, others): (Vec<Block>, Vec<Block>) =
+        std::mem::take(&mut state.blocks).into_iter().partition(|b| b.notebook == notebook);
+    state.blocks = others;
+    let file_ids: std::collections::HashSet<String> = saved.iter().map(|saved| saved.id.clone()).collect();
+    let dropped_ones_the_file_never_lists = held
+        .iter()
+        .filter(|b| b.state.is_dropped() && !file_ids.contains(&b.id))
+        .cloned()
+        .collect::<Vec<_>>();
+    for saved in saved {
+        let from_file = saved_block(notebook, saved);
+        let block = match held.iter().position(|b| b.id == from_file.id).map(|at| held.swap_remove(at)) {
+            Some(held) if !held.state.is_dropped() && held.has_the_text_of(&from_file) => held,
+            Some(held) if matches!(held.state, BlockState::Queued | BlockState::Running) => Block {
+                code: from_file.code,
+                session: from_file.session,
+                why: from_file.why,
+                author: from_file.author,
+                ..held
+            },
+            _ => from_file,
+        };
+        state.blocks.push(block);
+    }
+    state.blocks.extend(dropped_ones_the_file_never_lists);
+}
+
+fn saved_block(notebook: &str, saved: notebook_file::SavedBlock) -> Block {
+    let mut block = Block::new(notebook, &saved.session, &saved.code, &saved.author);
+    block.id = saved.id;
+    block.why = saved.why;
+    block.state = BlockState::Saved;
+    block
 }
 
 fn required_why(why: &str) -> Result<String> {

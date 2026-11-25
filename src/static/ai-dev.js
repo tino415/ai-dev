@@ -42,7 +42,9 @@
       if (versionOf(html) >= Number(target.dataset.v || 0)) htmx.swap(target, html, { swapStyle: 'outerHTML' });
     }
     const guarded = [...document.querySelectorAll('[data-guard]')];
-    if (stale && guarded.every((el) => !busy(el))) location.reload();
+    const flash = document.getElementById('flash');
+    const errorShown = flash && !flash.hidden;
+    if (stale && !errorShown && guarded.every((el) => !busy(el))) location.reload();
   }
 
   function showError(text) {
@@ -115,6 +117,8 @@
   document.addEventListener('focusout', later);
   document.addEventListener('input', later);
   document.addEventListener('click', (event) => {
-    if (event.target.matches('#flash button')) event.target.closest('#flash').hidden = true;
+    if (!event.target.matches('#flash button')) return;
+    event.target.closest('#flash').hidden = true;
+    later();
   });
 })();
