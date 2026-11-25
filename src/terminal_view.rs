@@ -11,7 +11,8 @@ const STYLE: &str = r#"
 .thead { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); background: var(--panel); }
 .thead b { flex: 1; font-family: ui-monospace, monospace; font-size: 14px; }
 .banner { background: var(--warn-bg); color: var(--warn); font-size: 13px; padding: 6px 12px; }
-.screen { flex: 1; min-height: 0; overflow: hidden; background: #111111; padding: 4px; }
+.screen { flex: 1; min-height: 0; overflow: hidden; background: #111111; }
+.screen .xterm { padding: 4px; }
 .screen.ended { opacity: .35; }
 .keys { display: flex; flex-wrap: wrap; gap: 4px; padding: 6px; border-top: 1px solid var(--line); background: var(--panel); }
 .keys button { flex: 1 0 13%; padding: 8px 0; }

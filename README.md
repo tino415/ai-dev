@@ -101,7 +101,7 @@ runs lands in that block's output, as the banner says. While a page terminal is 
 after the last one closes it goes back to 220×50, also when ai-dev starts again. A program that redraws on resize
 (`top`, `less`, a readline prompt) puts that redraw into a running block's output when a page terminal opens or
 closes, and on Android when the keyboard opens or closes: the terminal page asks the browser to shrink it above the
-keyboard, which keeps the key row in reach there; iOS ignores that and covers it. An open page terminal is an attached client, so the session does
-not idle out meanwhile. Secrets show unmasked there, as in `tmux attach`; no agent reads this channel. The page
-talks to a tmux client the server runs under a PTY, over a WebSocket that needs the passkey login and refuses a
-page from any origin but `AI_DEV_ORIGIN`.
+keyboard, which keeps the key row in reach there; iOS ignores that and covers it. An open page terminal is an
+attached client, so the session does not idle out meanwhile. Secrets show unmasked there, as in `tmux attach`; no
+agent reads this channel. The page talks to a tmux client the server runs under a PTY, over a WebSocket that needs
+the passkey login and refuses a page from any origin but `AI_DEV_ORIGIN`.

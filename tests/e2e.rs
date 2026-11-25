@@ -356,6 +356,49 @@ async fn the_page_terminal_draws_in_a_monospace_font() {
     assert_eq!(widths["i"], widths["w"], "i and W differ in width: {widths}");
 }
 
+async fn window_height(server: &Server) -> u64 {
+    let output = tokio::process::Command::new("tmux")
+        .args(["-L", &server.socket, "display", "-p", "-t", "=sh:", "#{window_height}"])
+        .output()
+        .await
+        .unwrap();
+    assert!(output.status.success(), "tmux display: {}", String::from_utf8_lossy(&output.stderr));
+    String::from_utf8(output.stdout).unwrap().trim().parse().unwrap()
+}
+
+const ROWS_FILL_THEIR_BOX: &str = "(() => { const box = document.getElementById('screen').getBoundingClientRect(); \
+    const drawn = document.querySelector('.xterm-screen').getBoundingClientRect(); \
+    const cell = drawn.height / document.querySelectorAll('.xterm-rows > div').length; \
+    return drawn.height > 0 && drawn.bottom <= box.bottom && drawn.right <= box.right \
+    && box.bottom - drawn.bottom < cell + 4.5; })()";
+
+#[tokio::test]
+async fn a_shorter_window_refits_the_terminal_whole_and_the_session_follows() {
+    let _one = ONE_BROWSER_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    create_bash_session(&ui, &server, "sh").await;
+    ui.open(&server.url("/sessions/sh/terminal")).await;
+    ui.wait_until("the terminal connected", "document.getElementById('terminal').dataset.state === 'connected'")
+        .await;
+    ui.wait_until("the rows fill their box", ROWS_FILL_THEIR_BOX).await;
+
+    for height in (500..=532).rev() {
+        ui.page.execute(SetDeviceMetricsOverrideParams::new(390, height, 2.0, true)).await.unwrap();
+        ui.wait_until(&format!("the rows fill their box in a window {height} high"), ROWS_FILL_THEIR_BOX).await;
+    }
+    let rows: u64 = ui.eval("document.querySelectorAll('.xterm-rows > div').length").await;
+    let below_the_status_line = rows - 1;
+    let deadline = Instant::now() + WAIT;
+    loop {
+        let height = window_height(&server).await;
+        if height == below_the_status_line {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the session stayed {height} rows, the page has {rows}");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 #[tokio::test]
 async fn typing_into_the_page_terminal_runs_in_the_session_and_its_output_shows_in_the_rows() {
     let _one = ONE_BROWSER_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
