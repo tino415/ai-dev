@@ -4,6 +4,7 @@
   const screen = byId('screen');
   const keys = byId('keys');
   const encoder = new TextEncoder();
+  const RESIZE_SETTLE_MS = 150;
   const SEQUENCES = {
     esc: '\x1b', tab: '\t', up: '\x1b[A', down: '\x1b[B', left: '\x1b[D', right: '\x1b[C',
     'ctrl-c': '\x03', 'ctrl-d': '\x04', pgup: '\x1b[5~',
@@ -85,7 +86,11 @@
     term.onData(type);
     term.onBinary(data => sendBytes(Uint8Array.from(data, c => c.charCodeAt(0))));
     term.onResize(sendSize);
-    new ResizeObserver(() => fit.fit()).observe(screen);
+    let settling = null;
+    new ResizeObserver(() => {
+      clearTimeout(settling);
+      settling = setTimeout(() => fit.fit(), RESIZE_SETTLE_MS);
+    }).observe(screen);
   }
 
   function connect() {

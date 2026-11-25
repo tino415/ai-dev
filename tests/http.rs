@@ -289,3 +289,11 @@ async fn the_login_page_links_the_manifest_and_icons() {
         assert!(page.contains(tag), "{tag}");
     }
 }
+
+#[tokio::test]
+async fn the_login_page_lets_the_phone_keyboard_cover_it() {
+    let s = server().await;
+    let page = s.client.get(format!("{}/login", s.base)).send().await.unwrap().text().await.unwrap();
+    let viewport = "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">";
+    assert!(page.contains(viewport), "{page}");
+}

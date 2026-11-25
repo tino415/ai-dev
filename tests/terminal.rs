@@ -132,6 +132,22 @@ fn printed_by_the_shell(screen: &str, text: &str) -> bool {
 }
 
 #[tokio::test]
+async fn the_terminal_page_lets_the_phone_keyboard_shrink_it() {
+    let server = server_with_a_shell_session().await;
+    let page = reqwest::Client::new()
+        .get(format!("http://{}/sessions/sh/terminal", server.address))
+        .header("cookie", &server.cookie)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let viewport = "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1,interactive-widget=resizes-content\">";
+    assert!(page.contains(viewport), "{page}");
+}
+
+#[tokio::test]
 async fn typing_through_the_socket_reaches_the_shell_and_its_output_comes_back() {
     let server = server_with_a_running_shell().await;
     let mut socket = server.open_terminal(ORIGIN, true, 100, 30).await.unwrap();
