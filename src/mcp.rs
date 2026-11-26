@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
 use rmcp::handler::server::wrapper::Parameters;
-use rmcp::{tool, tool_handler, tool_router, ServerHandler};
+use rmcp::{ServerHandler, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::core::{Admission, Core, JoinOutcome};
 use crate::model::*;
@@ -89,7 +89,9 @@ struct ReadBlockArgs {
 
 #[tool_router]
 impl Mcp {
-    #[tool(description = "Ask to join a notebook. Returns a link for the owner to approve; call again after the approval to receive your notebook token.")]
+    #[tool(
+        description = "Ask to join a notebook. Returns a link for the owner to approve; call again after the approval to receive your notebook token."
+    )]
     async fn join_notebook(&self, Parameters(args): Parameters<JoinArgs>) -> String {
         reply(self.core.request_join(&args.notebook, &args.agent).map(|outcome| match outcome {
             JoinOutcome::Pending { approve_link } => json!({
@@ -107,7 +109,9 @@ impl Mcp {
         reply(Ok(json!({ "notebooks": names })))
     }
 
-    #[tool(description = "List sessions (terminals) blocks can run in, with their run and read policies.")]
+    #[tool(
+        description = "List sessions (terminals) blocks can run in, with their run and read policies."
+    )]
     async fn list_sessions(&self) -> String {
         let sessions: Vec<Value> = self
             .core
@@ -127,7 +131,9 @@ impl Mcp {
         reply(Ok(json!({ "sessions": sessions })))
     }
 
-    #[tool(description = "List variables usable as {{name}} in blocks. Secret values are never shown; the tool fills them in when the block runs.")]
+    #[tool(
+        description = "List variables usable as {{name}} in blocks. Secret values are never shown; the tool fills them in when the block runs."
+    )]
     async fn list_variables(&self, Parameters(args): Parameters<TokenArgs>) -> String {
         reply(self.admit(&args.token).map(|admission| {
             let variables: Vec<Value> = self
@@ -146,10 +152,13 @@ impl Mcp {
         }))
     }
 
-    #[tool(description = "Propose a new session for the owner to start or reject. Returns a link to the proposal.")]
+    #[tool(
+        description = "Propose a new session for the owner to start or reject. Returns a link to the proposal."
+    )]
     async fn propose_session(&self, Parameters(args): Parameters<ProposeSessionArgs>) -> String {
         reply(self.admit(&args.token).and_then(|admission| {
-            let preset = Preset::parse(&args.preset).ok_or("preset must be bash, iex, psql or mysql")?;
+            let preset =
+                Preset::parse(&args.preset).ok_or("preset must be bash, iex, psql or mysql")?;
             let def = SessionDef::from_preset(
                 &args.name,
                 preset,
@@ -165,7 +174,9 @@ impl Mcp {
         }))
     }
 
-    #[tool(description = "Propose a block of code to run in a session. It runs only after the owner clicks Run (or the session's run policy is auto). Returns the block id and a link; tell the owner in your chat you are waiting, then end your turn.")]
+    #[tool(
+        description = "Propose a block of code to run in a session. It runs only after the owner clicks Run (or the session's run policy is auto). Returns the block id and a link; tell the owner in your chat you are waiting, then end your turn."
+    )]
     async fn propose_block(&self, Parameters(args): Parameters<ProposeBlockArgs>) -> String {
         reply(self.admit(&args.token).and_then(|admission| {
             let block = self.core.propose_block(
@@ -179,7 +190,9 @@ impl Mcp {
         }))
     }
 
-    #[tool(description = "Read a block's state. Output is returned only after the owner released it; large output comes in pages. If the owner edited your code or left a note, they are shown here.")]
+    #[tool(
+        description = "Read a block's state. Output is returned only after the owner released it; large output comes in pages. If the owner edited your code or left a note, they are shown here."
+    )]
     async fn read_block(&self, Parameters(args): Parameters<ReadBlockArgs>) -> String {
         reply(self.admit(&args.token).and_then(|admission| {
             let block = self
@@ -212,7 +225,9 @@ impl Mcp {
             view["note"] = json!(note);
         }
         if block.hidden_input_sent {
-            view["owner_sent_hidden_input"] = json!("the owner typed hidden input, such as a password, into this block; its value is not shown");
+            view["owner_sent_hidden_input"] = json!(
+                "the owner typed hidden input, such as a password, into this block; its value is not shown"
+            );
         }
         view["output"] = match (block.state, block.read, &block.output) {
             (BlockState::Queued | BlockState::Running, _, _) => Value::Null,

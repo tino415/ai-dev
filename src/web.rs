@@ -5,29 +5,29 @@ use std::time::Duration;
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
 use axum::extract::{Path, Query, Request, State};
-use axum::http::{header, HeaderMap, StatusCode};
+use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{Html, IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Json, Router};
 use futures::stream::SplitSink;
-use futures::{stream, SinkExt, Stream, StreamExt};
+use futures::{SinkExt, Stream, StreamExt, stream};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::broadcast::error::RecvError;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use tokio_stream::wrappers::BroadcastStream;
+use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use webauthn_rs::prelude::{PublicKeyCredential, RegisterPublicKeyCredential};
 
 use crate::auth::{Auth, PASSKEY_SCRIPT};
 use crate::core::{Change, Core, VariableScope};
-use crate::html::{esc, page, sign_in_page, HTMX, HTMX_SSE, PAGE_SCRIPT};
+use crate::html::{HTMX, HTMX_SSE, PAGE_SCRIPT, esc, page, sign_in_page};
 use crate::model::*;
-use crate::notebook_view::{self, attach_line, policy_text, session_heading, toggle_label, Part};
+use crate::notebook_view::{self, Part, attach_line, policy_text, session_heading, toggle_label};
 use crate::terminal_view::{self, TERMINAL_SCRIPT, XTERM, XTERM_FIT, XTERM_STYLE};
-use crate::tmux::{pty_size, TerminalSize};
+use crate::tmux::{TerminalSize, pty_size};
 
 #[derive(Clone)]
 pub struct App {
@@ -55,8 +55,14 @@ pub fn router(app: App) -> Router {
         .route("/n/{name}/var/delete", post(delete_notebook_var))
         .route("/n/{name}/tokens/{id}/revoke", post(revoke_token))
         .route("/n/{name}/sessions", post(use_session))
-        .route("/n/{name}/sessions/{session}/start", post(start_notebook_session))
-        .route("/n/{name}/sessions/{session}/stop", post(stop_notebook_session))
+        .route(
+            "/n/{name}/sessions/{session}/start",
+            post(start_notebook_session),
+        )
+        .route(
+            "/n/{name}/sessions/{session}/stop",
+            post(stop_notebook_session),
+        )
         .route("/b/{id}/run", post(run_block))
         .route("/b/{id}/rerun", post(rerun_block))
         .route("/b/{id}/input", post(send_hidden_input))
@@ -81,17 +87,50 @@ pub fn router(app: App) -> Router {
         .route("/profiles", get(profiles_page).post(create_profile))
         .route("/profiles/{name}/var", post(set_profile_var))
         .route("/profiles/{name}/var/delete", post(delete_profile_var))
-        .route("/static/htmx-2.0.11.min.js", get(|| asset(SCRIPT, VERSIONED, HTMX.as_bytes())))
-        .route("/static/htmx-ext-sse-2.2.4.js", get(|| asset(SCRIPT, VERSIONED, HTMX_SSE.as_bytes())))
-        .route("/static/ai-dev.js", get(|| asset(SCRIPT, REVALIDATE, PAGE_SCRIPT.as_bytes())))
-        .route("/static/xterm-6.0.0.js", get(|| asset(SCRIPT, VERSIONED, XTERM.as_bytes())))
-        .route("/static/xterm-6.0.0.css", get(|| asset(STYLESHEET, VERSIONED, XTERM_STYLE.as_bytes())))
-        .route("/static/addon-fit-0.11.0.js", get(|| asset(SCRIPT, VERSIONED, XTERM_FIT.as_bytes())))
-        .route("/static/terminal.js", get(|| asset(SCRIPT, REVALIDATE, TERMINAL_SCRIPT.as_bytes())))
-        .route("/static/manifest.webmanifest", get(|| asset("application/manifest+json", REVALIDATE, MANIFEST)))
-        .route("/static/icon-192.png", get(|| asset("image/png", REVALIDATE, ICON_192)))
-        .route("/static/icon-512.png", get(|| asset("image/png", REVALIDATE, ICON_512)))
-        .route("/static/icon-maskable-512.png", get(|| asset("image/png", REVALIDATE, ICON_MASKABLE_512)))
+        .route(
+            "/static/htmx-2.0.11.min.js",
+            get(|| asset(SCRIPT, VERSIONED, HTMX.as_bytes())),
+        )
+        .route(
+            "/static/htmx-ext-sse-2.2.4.js",
+            get(|| asset(SCRIPT, VERSIONED, HTMX_SSE.as_bytes())),
+        )
+        .route(
+            "/static/ai-dev.js",
+            get(|| asset(SCRIPT, REVALIDATE, PAGE_SCRIPT.as_bytes())),
+        )
+        .route(
+            "/static/xterm-6.0.0.js",
+            get(|| asset(SCRIPT, VERSIONED, XTERM.as_bytes())),
+        )
+        .route(
+            "/static/xterm-6.0.0.css",
+            get(|| asset(STYLESHEET, VERSIONED, XTERM_STYLE.as_bytes())),
+        )
+        .route(
+            "/static/addon-fit-0.11.0.js",
+            get(|| asset(SCRIPT, VERSIONED, XTERM_FIT.as_bytes())),
+        )
+        .route(
+            "/static/terminal.js",
+            get(|| asset(SCRIPT, REVALIDATE, TERMINAL_SCRIPT.as_bytes())),
+        )
+        .route(
+            "/static/manifest.webmanifest",
+            get(|| asset("application/manifest+json", REVALIDATE, MANIFEST)),
+        )
+        .route(
+            "/static/icon-192.png",
+            get(|| asset("image/png", REVALIDATE, ICON_192)),
+        )
+        .route(
+            "/static/icon-512.png",
+            get(|| asset("image/png", REVALIDATE, ICON_512)),
+        )
+        .route(
+            "/static/icon-maskable-512.png",
+            get(|| asset("image/png", REVALIDATE, ICON_MASKABLE_512)),
+        )
         .route("/login", get(login_page))
         .route("/enroll", get(enroll_page))
         .route("/logout", post(logout))
@@ -135,7 +174,11 @@ const ICON_192: &[u8] = include_bytes!("static/icon-192.png");
 const ICON_512: &[u8] = include_bytes!("static/icon-512.png");
 const ICON_MASKABLE_512: &[u8] = include_bytes!("static/icon-maskable-512.png");
 
-async fn asset(content_type: &'static str, cache_control: &'static str, body: &'static [u8]) -> impl IntoResponse {
+async fn asset(
+    content_type: &'static str,
+    cache_control: &'static str,
+    body: &'static [u8],
+) -> impl IntoResponse {
     (
         [
             (header::CONTENT_TYPE, content_type),
@@ -163,7 +206,9 @@ async fn answer(app: &App, headers: &HeaderMap, notebook: &str, part: Part) -> R
 async fn even_if_the_browser_leaves<T: Send + 'static>(
     work: impl Future<Output = Result<T, String>> + Send + 'static,
 ) -> Result<T, String> {
-    tokio::spawn(work).await.map_err(|error| error.to_string())?
+    tokio::spawn(work)
+        .await
+        .map_err(|error| error.to_string())?
 }
 
 // notebooks
@@ -173,7 +218,12 @@ async fn home(State(app): State<App>) -> Html<String> {
         .core
         .notebooks()
         .iter()
-        .map(|n| format!("<div class=\"session\"><a href=\"/n/{0}\"><b>{0}</b></a></div>", esc(&n.name)))
+        .map(|n| {
+            format!(
+                "<div class=\"session\"><a href=\"/n/{0}\"><b>{0}</b></a></div>",
+                esc(&n.name)
+            )
+        })
         .collect();
     Html(page(
         "Notebooks",
@@ -195,7 +245,10 @@ async fn create_notebook(State(app): State<App>, Form(form): Form<NameForm>) -> 
     Ok(Redirect::to(&format!("/n/{}", form.name)))
 }
 
-async fn notebook_page(State(app): State<App>, Path(name): Path<String>) -> Result<Html<String>, Fail> {
+async fn notebook_page(
+    State(app): State<App>,
+    Path(name): Path<String>,
+) -> Result<Html<String>, Fail> {
     existing_notebook(&app, &name)?;
     app.core.load_notebook_file_if_changed(&name);
     Ok(Html(crate::html::notebook_page(
@@ -206,7 +259,9 @@ async fn notebook_page(State(app): State<App>, Path(name): Path<String>) -> Resu
 }
 
 fn existing_notebook(app: &App, name: &str) -> Result<Notebook, Fail> {
-    app.core.notebook(name).ok_or((StatusCode::NOT_FOUND, "no such notebook".into()))
+    app.core
+        .notebook(name)
+        .ok_or((StatusCode::NOT_FOUND, "no such notebook".into()))
 }
 
 #[derive(Deserialize)]
@@ -235,7 +290,10 @@ async fn notebook_events(
             async move { events_for(&core, &name, change).await }
         })
         .flat_map(stream::iter);
-    Ok(Sse::new(stream::iter(missed_before_listening).chain(events)).keep_alive(KeepAlive::default()))
+    Ok(
+        Sse::new(stream::iter(missed_before_listening).chain(events))
+            .keep_alive(KeepAlive::default()),
+    )
 }
 
 async fn events_for(
@@ -250,15 +308,21 @@ async fn events_for(
         Ok(Change::NotebookLoaded { notebook: n }) if n == notebook => {
             return vec![Ok(Event::default().event("stale").data("loaded from disk"))];
         }
-        Ok(Change::BlockAdded { notebook: n, id }) if n == notebook => vec![("block-added".to_string(), Part::Block(id))],
-        Ok(Change::Block { notebook: n, id }) if n == notebook => vec![(format!("b-{id}"), Part::Block(id))],
+        Ok(Change::BlockAdded { notebook: n, id }) if n == notebook => {
+            vec![("block-added".to_string(), Part::Block(id))]
+        }
+        Ok(Change::Block { notebook: n, id }) if n == notebook => {
+            vec![(format!("b-{id}"), Part::Block(id))]
+        }
         Ok(Change::Sessions) => vec![
             ("sessions".to_string(), Part::Sessions),
             ("composer".to_string(), Part::Composer),
             ("agents".to_string(), Part::Agents),
         ],
         Ok(Change::Proposals) => vec![("proposals".to_string(), Part::Proposals)],
-        Ok(Change::Agents { notebook: n }) if n == notebook => vec![("agents".to_string(), Part::Agents)],
+        Ok(Change::Agents { notebook: n }) if n == notebook => {
+            vec![("agents".to_string(), Part::Agents)]
+        }
         Ok(Change::Variables) => vec![
             ("variables".to_string(), Part::Variables),
             ("agents".to_string(), Part::Agents),
@@ -283,7 +347,11 @@ fn every_part(core: &Core, notebook: &str) -> Vec<(String, Part)> {
     parts
 }
 
-async fn render_events(core: &Core, notebook: &str, parts: Vec<(String, Part)>) -> Vec<Result<Event, Infallible>> {
+async fn render_events(
+    core: &Core,
+    notebook: &str,
+    parts: Vec<(String, Part)>,
+) -> Vec<Result<Event, Infallible>> {
     let mut events = Vec::new();
     for (name, part) in parts {
         let html = notebook_view::render(core, notebook, part).await;
@@ -307,7 +375,10 @@ async fn add_block(
     if form.code.trim().is_empty() {
         return Err(bad("type the code to run first".into()));
     }
-    let block = app.core.add_block(&name, &form.session, &form.code, HUMAN).map_err(bad)?;
+    let block = app
+        .core
+        .add_block(&name, &form.session, &form.code, HUMAN)
+        .map_err(bad)?;
     app.core.approve_run(&block.id, None, None).map_err(bad)?;
     Ok(answer(&app, &headers, &name, Part::Composer).await)
 }
@@ -323,7 +394,9 @@ async fn set_profile(
     headers: HeaderMap,
     Form(form): Form<ProfileForm>,
 ) -> Answer {
-    app.core.set_notebook_profile(&name, Some(form.profile)).map_err(bad)?;
+    app.core
+        .set_notebook_profile(&name, Some(form.profile))
+        .map_err(bad)?;
     Ok(answer(&app, &headers, &name, Part::Variables).await)
 }
 
@@ -363,7 +436,11 @@ async fn delete_notebook_var(
     Ok(answer(&app, &headers, &name, Part::Variables).await)
 }
 
-async fn revoke_token(State(app): State<App>, Path((name, id)): Path<(String, String)>, headers: HeaderMap) -> Answer {
+async fn revoke_token(
+    State(app): State<App>,
+    Path((name, id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Answer {
     app.core.revoke_token(&name, &id).map_err(bad)?;
     Ok(answer(&app, &headers, &name, Part::Agents).await)
 }
@@ -424,8 +501,15 @@ async fn answer_for_block(app: &App, headers: &HeaderMap, id: &str) -> Response 
     answer(app, headers, &notebook, Part::Block(id.to_string())).await
 }
 
-async fn run_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap, Form(form): Form<RunForm>) -> Answer {
-    app.core.approve_run(&id, form.code, form.note).map_err(bad)?;
+async fn run_block(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<RunForm>,
+) -> Answer {
+    app.core
+        .approve_run(&id, form.code, form.note)
+        .map_err(bad)?;
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 
@@ -445,16 +529,27 @@ async fn send_hidden_input(
     headers: HeaderMap,
     Form(form): Form<HiddenInputForm>,
 ) -> Answer {
-    app.core.send_hidden_input(&id, &form.value).await.map_err(bad)?;
+    app.core
+        .send_hidden_input(&id, &form.value)
+        .await
+        .map_err(bad)?;
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 
-async fn interrupt_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+async fn interrupt_block(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Answer {
     app.core.interrupt_block(&id).await.map_err(bad)?;
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 
-async fn start_and_run_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+async fn start_and_run_block(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Answer {
     let core = Arc::clone(&app.core);
     let block_id = id.clone();
     even_if_the_browser_leaves(async move { core.start_and_run(&block_id).await })
@@ -463,7 +558,11 @@ async fn start_and_run_block(State(app): State<App>, Path(id): Path<String>, hea
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 
-async fn cancel_start(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+async fn cancel_start(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Answer {
     app.core.cancel_start(&id).map_err(bad)?;
     Ok(answer_for_block(&app, &headers, &id).await)
 }
@@ -478,29 +577,51 @@ async fn reject_block(
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 
-async fn delete_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+async fn delete_block(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Answer {
     app.core.delete_block(&id).map_err(bad)?;
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 
-async fn release_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
-    app.core.decide_read(&id, ReadDecision::Released).map_err(bad)?;
+async fn release_block(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Answer {
+    app.core
+        .decide_read(&id, ReadDecision::Released)
+        .map_err(bad)?;
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 
 async fn hide_block(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
-    app.core.decide_read(&id, ReadDecision::Hidden).map_err(bad)?;
+    app.core
+        .decide_read(&id, ReadDecision::Hidden)
+        .map_err(bad)?;
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 
-async fn approve_join(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
-    let notebook = app.core.join_notebook_of(&id).ok_or_else(|| bad("unknown join request".into()))?;
+async fn approve_join(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Answer {
+    let notebook = app
+        .core
+        .join_notebook_of(&id)
+        .ok_or_else(|| bad("unknown join request".into()))?;
     app.core.approve_join(&id).map_err(bad)?;
     Ok(answer(&app, &headers, &notebook, Part::Agents).await)
 }
 
 async fn deny_join(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
-    let notebook = app.core.join_notebook_of(&id).ok_or_else(|| bad("unknown join request".into()))?;
+    let notebook = app
+        .core
+        .join_notebook_of(&id)
+        .ok_or_else(|| bad("unknown join request".into()))?;
     app.core.deny_join(&id).map_err(bad)?;
     Ok(answer(&app, &headers, &notebook, Part::Agents).await)
 }
@@ -599,7 +720,12 @@ async fn create_session(State(app): State<App>, Form(form): Form<NewSessionForm>
         .filter(|line| !line.trim().is_empty())
         .map(str::to_string)
         .collect();
-    let def = SessionDef::from_preset(&form.name, preset, form.start_command.as_deref().unwrap_or_default(), &setup);
+    let def = SessionDef::from_preset(
+        &form.name,
+        preset,
+        form.start_command.as_deref().unwrap_or_default(),
+        &setup,
+    );
     if app.core.session(&def.name).is_some() {
         return Err(bad(format!("session {} already exists", def.name)));
     }
@@ -634,8 +760,15 @@ struct PolicyForm {
     profile: Option<String>,
 }
 
-async fn update_session(State(app): State<App>, Path(name): Path<String>, Form(form): Form<PolicyForm>) -> Done {
-    let mut def = app.core.session(&name).ok_or_else(|| bad("unknown session".into()))?;
+async fn update_session(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    Form(form): Form<PolicyForm>,
+) -> Done {
+    let mut def = app
+        .core
+        .session(&name)
+        .ok_or_else(|| bad("unknown session".into()))?;
     def.run_policy = parse_policy(&form.run_policy);
     def.read_policy = parse_policy(&form.read_policy);
     def.idle_timeout_secs = form.idle_minutes.max(1) * 60;
@@ -652,7 +785,9 @@ fn parse_block_seconds(text: &str) -> Result<Option<u64>, Fail> {
         "" => Ok(None),
         seconds => match seconds.parse::<u64>() {
             Ok(seconds) if seconds > 0 => Ok(Some(seconds)),
-            _ => Err(bad("block seconds is a whole number above 0, or empty for no limit".into())),
+            _ => Err(bad(
+                "block seconds is a whole number above 0, or empty for no limit".into(),
+            )),
         },
     }
 }
@@ -672,8 +807,14 @@ const PING_EVERY: Duration = Duration::from_secs(20);
 const PAGE_SILENCE_LIMIT: Duration = Duration::from_secs(60);
 const LARGEST_SIDE: u16 = 1000;
 
-async fn terminal_page(State(app): State<App>, Path(name): Path<String>) -> Result<Html<String>, Fail> {
-    let def = app.core.session(&name).ok_or((StatusCode::NOT_FOUND, "no such session".into()))?;
+async fn terminal_page(
+    State(app): State<App>,
+    Path(name): Path<String>,
+) -> Result<Html<String>, Fail> {
+    let def = app
+        .core
+        .session(&name)
+        .ok_or((StatusCode::NOT_FOUND, "no such session".into()))?;
     let running = app.core.is_running(&name).await;
     Ok(Html(terminal_view::page(&def, running)))
 }
@@ -705,13 +846,23 @@ async fn terminal_socket(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Answer {
-    let origin = headers.get(header::ORIGIN).and_then(|value| value.to_str().ok());
+    let origin = headers
+        .get(header::ORIGIN)
+        .and_then(|value| value.to_str().ok());
     if origin != Some(app.core.origin()) {
-        return Err((StatusCode::FORBIDDEN, "the terminal answers pages of this origin only".into()));
+        return Err((
+            StatusCode::FORBIDDEN,
+            "the terminal answers pages of this origin only".into(),
+        ));
     }
-    app.core.session(&name).ok_or((StatusCode::NOT_FOUND, "no such session".into()))?;
+    app.core
+        .session(&name)
+        .ok_or((StatusCode::NOT_FOUND, "no such session".into()))?;
     if !app.core.is_running(&name).await {
-        return Err((StatusCode::CONFLICT, format!("session {name} is not running")));
+        return Err((
+            StatusCode::CONFLICT,
+            format!("session {name} is not running"),
+        ));
     }
     let core = Arc::clone(&app.core);
     Ok(upgrade
@@ -725,7 +876,8 @@ async fn pump_terminal(core: Arc<Core>, session: String, size: TerminalSize, soc
         Ok(attached) => attached,
         Err(_) => {
             if !core.is_running(&session).await {
-                send_within_deadline(&mut to_page, state_frame(json!({ "session": "stopped" }))).await;
+                send_within_deadline(&mut to_page, state_frame(json!({ "session": "stopped" })))
+                    .await;
             }
             return;
         }
@@ -736,7 +888,11 @@ async fn pump_terminal(core: Arc<Core>, session: String, size: TerminalSize, soc
     let mut bytes = vec![0u8; SCREEN_READ];
     let mut ping = tokio::time::interval(PING_EVERY);
     let mut last_heard = tokio::time::Instant::now();
-    send_within_deadline(&mut to_page, state_frame(json!({ "running_block": running_block }))).await;
+    send_within_deadline(
+        &mut to_page,
+        state_frame(json!({ "running_block": running_block })),
+    )
+    .await;
     loop {
         tokio::select! {
             read = screen.read(&mut bytes) => {
@@ -803,8 +959,14 @@ fn state_frame(state: Value) -> Message {
     Message::Text(state.to_string().into())
 }
 
-async fn send_within_deadline(to_page: &mut SplitSink<WebSocket, Message>, message: Message) -> bool {
-    matches!(tokio::time::timeout(PAGE_SILENCE_LIMIT, to_page.send(message)).await, Ok(Ok(())))
+async fn send_within_deadline(
+    to_page: &mut SplitSink<WebSocket, Message>,
+    message: Message,
+) -> bool {
+    matches!(
+        tokio::time::timeout(PAGE_SILENCE_LIMIT, to_page.send(message)).await,
+        Ok(Ok(()))
+    )
 }
 
 fn proposal_notebook(app: &App, id: &str) -> Result<String, Fail> {
@@ -816,7 +978,11 @@ fn proposal_notebook(app: &App, id: &str) -> Result<String, Fail> {
         .ok_or_else(|| bad("unknown proposal".into()))
 }
 
-async fn start_proposal(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+async fn start_proposal(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Answer {
     let notebook = proposal_notebook(&app, &id)?;
     let core = Arc::clone(&app.core);
     even_if_the_browser_leaves(async move { core.approve_proposal(&id).await })
@@ -825,7 +991,11 @@ async fn start_proposal(State(app): State<App>, Path(id): Path<String>, headers:
     Ok(after_proposal(&app, &headers, &notebook).await)
 }
 
-async fn reject_proposal(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+async fn reject_proposal(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+) -> Answer {
     let notebook = proposal_notebook(&app, &id)?;
     app.core.reject_proposal(&id).map_err(bad)?;
     Ok(after_proposal(&app, &headers, &notebook).await)
@@ -884,15 +1054,30 @@ async fn create_profile(State(app): State<App>, Form(form): Form<NameForm>) -> D
     Ok(Redirect::to("/profiles"))
 }
 
-async fn set_profile_var(State(app): State<App>, Path(name): Path<String>, Form(form): Form<VarForm>) -> Done {
+async fn set_profile_var(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    Form(form): Form<VarForm>,
+) -> Done {
     app.core
-        .set_variable(VariableScope::Profile(name), &form.name, &form.value.unwrap_or_default(), form.secret.is_some())
+        .set_variable(
+            VariableScope::Profile(name),
+            &form.name,
+            &form.value.unwrap_or_default(),
+            form.secret.is_some(),
+        )
         .map_err(bad)?;
     Ok(Redirect::to("/profiles"))
 }
 
-async fn delete_profile_var(State(app): State<App>, Path(name): Path<String>, Form(form): Form<VarForm>) -> Done {
-    app.core.delete_variable(VariableScope::Profile(name), &form.name).map_err(bad)?;
+async fn delete_profile_var(
+    State(app): State<App>,
+    Path(name): Path<String>,
+    Form(form): Form<VarForm>,
+) -> Done {
+    app.core
+        .delete_variable(VariableScope::Profile(name), &form.name)
+        .map_err(bad)?;
     Ok(Redirect::to("/profiles"))
 }
 
@@ -913,7 +1098,9 @@ async fn enroll_page() -> Html<String> {
         "Enroll",
         "<div class=\"panel\"><h2>Enroll a passkey</h2><div class=\"row\"><input id=\"code\" placeholder=\"code from ai-dev enroll\">\
 <button id=\"go\" class=\"primary\">Enroll</button></div><p id=\"msg\" class=\"err\"></p></div>",
-        &format!("{PASSKEY_SCRIPT}\ngo.onclick=()=>enroll(code.value).catch(e=>msg.textContent=e.message);"),
+        &format!(
+            "{PASSKEY_SCRIPT}\ngo.onclick=()=>enroll(code.value).catch(e=>msg.textContent=e.message);"
+        ),
     ))
 }
 
@@ -933,19 +1120,32 @@ struct FinishBody<T> {
     credential: T,
 }
 
-async fn register_start(State(app): State<App>, headers: HeaderMap, Json(body): Json<CodeBody>) -> Result<Json<Value>, Fail> {
+async fn register_start(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(body): Json<CodeBody>,
+) -> Result<Json<Value>, Fail> {
     let (challenge_id, options) = app
         .auth
-        .start_register(&headers, &body.code.unwrap_or_default(), &app.core.passkeys())
+        .start_register(
+            &headers,
+            &body.code.unwrap_or_default(),
+            &app.core.passkeys(),
+        )
         .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
-    Ok(Json(json!({ "challenge_id": challenge_id, "options": options })))
+    Ok(Json(
+        json!({ "challenge_id": challenge_id, "options": options }),
+    ))
 }
 
 async fn register_finish(
     State(app): State<App>,
     Json(body): Json<FinishBody<RegisterPublicKeyCredential>>,
 ) -> Result<Response, Fail> {
-    let (passkey, cookie) = app.auth.finish_register(&body.challenge_id, &body.credential).map_err(bad)?;
+    let (passkey, cookie) = app
+        .auth
+        .finish_register(&body.challenge_id, &body.credential)
+        .map_err(bad)?;
     app.core.add_passkey(passkey).map_err(bad)?;
     Ok(([(header::SET_COOKIE, cookie)], Json(json!({ "ok": true }))).into_response())
 }
@@ -955,10 +1155,15 @@ async fn login_start(State(app): State<App>) -> Result<Json<Value>, Fail> {
         .auth
         .start_login(&app.core.passkeys())
         .map_err(|e| (StatusCode::UNAUTHORIZED, e))?;
-    Ok(Json(json!({ "challenge_id": challenge_id, "options": options })))
+    Ok(Json(
+        json!({ "challenge_id": challenge_id, "options": options }),
+    ))
 }
 
-async fn login_finish(State(app): State<App>, Json(body): Json<FinishBody<PublicKeyCredential>>) -> Result<Response, Fail> {
+async fn login_finish(
+    State(app): State<App>,
+    Json(body): Json<FinishBody<PublicKeyCredential>>,
+) -> Result<Response, Fail> {
     let (result, cookie) = app
         .auth
         .finish_login(&body.challenge_id, &body.credential)
