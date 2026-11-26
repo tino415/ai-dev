@@ -130,6 +130,8 @@ async fn approving_and_releasing_endpoints_refuse_a_request_without_a_passkey_se
     let s = server().await;
     for path in [
         "/b/x/run",
+        "/b/x/run-and-release",
+        "/b/x/hold-read",
         "/b/x/reject",
         "/b/x/release",
         "/b/x/hide",

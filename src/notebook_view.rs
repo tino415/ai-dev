@@ -16,7 +16,7 @@ pub async fn layout(core: &Core, notebook: &str) -> String {
     let blocks: String = core
         .blocks(notebook)
         .iter()
-        .map(|block| block_view(version, block))
+        .map(|block| block_view(version, core, block))
         .collect();
     let file_error = core
         .notebook_file_error(notebook)
@@ -46,7 +46,7 @@ pub async fn render(core: &Core, notebook: &str, part: Part) -> String {
     match part {
         Part::Block(id) => core
             .block(&id)
-            .map(|block| block_view(version, &block))
+            .map(|block| block_view(version, core, &block))
             .unwrap_or_default(),
         Part::Sessions => sessions_panel(version, core, notebook, &core.sessions().await),
         Part::Variables => variables_panel(version, core, notebook),
@@ -334,7 +334,7 @@ fn labelled(label: &str, code: &str) -> String {
 
 // blocks
 
-fn block_view(version: u64, block: &Block) -> String {
+fn block_view(version: u64, core: &Core, block: &Block) -> String {
     let live = live(
         &format!("b-{}", block.id),
         &format!("b-{}", block.id),
@@ -344,6 +344,7 @@ fn block_view(version: u64, block: &Block) -> String {
         return format!("<div {live} hidden></div>");
     }
     let by_agent = block.proposed_by_agent();
+    let reads_wait_for_a_click = reads_wait_for_a_click(core, block);
     let (badge, state) = state_badge(block);
     let why = block
         .why
@@ -360,7 +361,7 @@ fn block_view(version: u64, block: &Block) -> String {
     };
     format!(
         "<div class=\"block {side}\" {live}><div class=\"bhead\"><span class=\"who\">{who}</span> → <b>{session}</b>\
-<span class=\"state {badge}\">{state}</span></div>{why}{body}{output}{hidden_input}{agent_view}</div>",
+<span class=\"state {badge}\">{state}</span></div>{why}{body}{output}{hold_read}{hidden_input}{agent_view}</div>",
         side = if by_agent { "agent" } else { "me" },
         who = if by_agent {
             esc(&block.author)
@@ -368,10 +369,18 @@ fn block_view(version: u64, block: &Block) -> String {
             "me".to_string()
         },
         session = esc(&block.session),
-        body = code_and_actions(block),
+        body = code_and_actions(block, reads_wait_for_a_click),
         output = output_view(block),
+        hold_read = hold_read_button(block, reads_wait_for_a_click),
         hidden_input = hidden_input_form(block),
     )
+}
+
+fn reads_wait_for_a_click(core: &Core, block: &Block) -> bool {
+    block.proposed_by_agent()
+        && core
+            .session(&block.session)
+            .is_some_and(|def| def.read_policy == Policy::Ask)
 }
 
 fn state_badge(block: &Block) -> (&'static str, String) {
@@ -388,8 +397,13 @@ fn state_badge(block: &Block) -> (&'static str, String) {
     match block.state {
         BlockState::Pending => ("s-proposed", "proposed".to_string()),
         BlockState::Saved => ("s-draft", "from the notebook file".to_string()),
-        BlockState::Queued => ("s-proposed", "queued".to_string()),
-        BlockState::Running => ("s-proposed", "running".to_string()),
+        BlockState::Queued | BlockState::Running if block.release_when_done => (
+            "s-proposed",
+            format!("{} · agent reads when done", state_word(block.state)),
+        ),
+        BlockState::Queued | BlockState::Running => {
+            ("s-proposed", state_word(block.state).to_string())
+        }
         _ if !block.proposed_by_agent() => (done, outcome.to_string()),
         _ => match block.read {
             ReadDecision::Undecided => ("s-read", format!("{outcome} · waiting for read approval")),
@@ -399,7 +413,15 @@ fn state_badge(block: &Block) -> (&'static str, String) {
     }
 }
 
-fn code_and_actions(block: &Block) -> String {
+fn state_word(state: BlockState) -> &'static str {
+    if state == BlockState::Queued {
+        "queued"
+    } else {
+        "running"
+    }
+}
+
+fn code_and_actions(block: &Block, reads_wait_for_a_click: bool) -> String {
     if matches!(block.state, BlockState::Pending | BlockState::Saved) {
         let rows = block.code.lines().count().clamp(2, 20);
         let (run_class, note) = if block.proposed_by_agent() {
@@ -410,9 +432,17 @@ fn code_and_actions(block: &Block) -> String {
         } else {
             ("ok", "")
         };
+        let run_and_release = if reads_wait_for_a_click {
+            format!(
+                "<button class=\"ok\" hx-post=\"/b/{id}/run-and-release\" hx-include=\"closest .block\" data-working=\"Running…\">Run and let read</button>",
+                id = block.id
+            )
+        } else {
+            String::new()
+        };
         return format!(
             "<textarea name=\"code\" class=\"code\" rows=\"{rows}\" spellcheck=\"false\">{code}</textarea>\
-<div class=\"actions\"><button class=\"{run_class}\" hx-post=\"/b/{id}/run\" hx-include=\"closest .block\" data-working=\"Running…\">Run</button>\
+<div class=\"actions\"><button class=\"{run_class}\" hx-post=\"/b/{id}/run\" hx-include=\"closest .block\" data-working=\"Running…\">Run</button>{run_and_release}\
 <button class=\"no\" hx-post=\"/b/{id}/reject\" hx-include=\"closest .block\" data-working=\"Rejecting…\">Reject</button>{note}</div>{stopped}",
             code = esc(&block.code),
             id = block.id,
@@ -446,6 +476,17 @@ fn code_and_actions(block: &Block) -> String {
     format!("<pre>{}</pre>{edited}{note}{rerun}", code_html(&block.code))
 }
 
+fn hold_read_button(block: &Block, reads_wait_for_a_click: bool) -> String {
+    let queued_or_running = matches!(block.state, BlockState::Queued | BlockState::Running);
+    if !(block.release_when_done && queued_or_running && reads_wait_for_a_click) {
+        return String::new();
+    }
+    format!(
+        "<div class=\"actions\"><button hx-post=\"/b/{id}/hold-read\" data-working=\"…\">Ask me before the agent reads</button></div>",
+        id = block.id
+    )
+}
+
 fn hidden_input_form(block: &Block) -> String {
     if block.state != BlockState::Running {
         return String::new();
@@ -463,8 +504,13 @@ fn session_stopped_line(block: &Block) -> String {
     if !block.session_stopped {
         return String::new();
     }
+    let release = if block.release_when_done {
+        "; once it runs, the agent reads the output when the block ends"
+    } else {
+        ""
+    };
     format!(
-        "<div class=\"why stopped\">Session {session} is not running</div>\
+        "<div class=\"why stopped\">Session {session} is not running{release}</div>\
 <div class=\"actions\"><button class=\"primary\" hx-post=\"/b/{id}/start-and-run\" data-working=\"Starting…\">Start {session} and run</button>\
 <button class=\"no\" hx-post=\"/b/{id}/cancel-start\" data-working=\"…\">Cancel</button></div>",
         session = esc(&block.session),

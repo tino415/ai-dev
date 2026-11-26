@@ -129,6 +129,7 @@ pub struct Block {
     pub read: ReadDecision,
     pub session_stopped: bool,
     pub hidden_input_sent: bool,
+    pub release_when_done: bool,
 }
 
 impl Block {
@@ -147,6 +148,7 @@ impl Block {
             read: ReadDecision::Undecided,
             session_stopped: false,
             hidden_input_sent: false,
+            release_when_done: false,
         }
     }
 

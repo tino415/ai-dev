@@ -301,6 +301,12 @@ impl Core {
             return Err("names use a-z, 0-9, - and _".into());
         }
         let mut state = self.state();
+        let blocks_whose_buttons_follow_the_policy: Vec<(String, String)> = state
+            .blocks
+            .iter()
+            .filter(|b| b.session == def.name && b.proposed_by_agent() && !b.state.is_dropped())
+            .map(|b| (b.notebook.clone(), b.id.clone()))
+            .collect();
         match state
             .persisted
             .sessions
@@ -311,7 +317,11 @@ impl Core {
             None => state.persisted.sessions.push(def),
         }
         self.save_state(&state)?;
+        drop(state);
         self.notify(Change::Sessions);
+        for (notebook, id) in blocks_whose_buttons_follow_the_policy {
+            self.notify_block(&notebook, &id);
+        }
         Ok(())
     }
 
@@ -665,7 +675,7 @@ impl Core {
         block.hidden_input_sent = false;
         block.read = ReadDecision::Undecided;
         let note = block.note.clone();
-        self.queue_run(state, id, None, note)
+        self.queue_run(state, id, None, note, false)
     }
 
     pub async fn start_and_run(self: &Arc<Self>, id: &str) -> Result<()> {
@@ -678,10 +688,11 @@ impl Core {
             return Err("block is not waiting for a run".into());
         }
         self.start_session(&block.session).await?;
-        self.approve_run(id, None, block.note)
+        self.approve(id, None, block.note, block.release_when_done)
     }
 
     pub fn cancel_start(&self, id: &str) -> Result<()> {
+        block_mut(&mut self.state(), id)?.release_when_done = false;
         self.set_session_stopped(id, false)
     }
 
@@ -701,9 +712,28 @@ impl Core {
         edited_code: Option<String>,
         note: Option<String>,
     ) -> Result<()> {
+        self.approve(id, edited_code, note, false)
+    }
+
+    pub fn approve_run_and_release(
+        self: &Arc<Self>,
+        id: &str,
+        edited_code: Option<String>,
+        note: Option<String>,
+    ) -> Result<()> {
+        self.approve(id, edited_code, note, true)
+    }
+
+    fn approve(
+        self: &Arc<Self>,
+        id: &str,
+        edited_code: Option<String>,
+        note: Option<String>,
+        release_when_done: bool,
+    ) -> Result<()> {
         let mut state = self.state();
         self.block_file_as_remembered(&mut state, id)?;
-        self.queue_run(state, id, edited_code, note)
+        self.queue_run(state, id, edited_code, note, release_when_done)
     }
 
     fn queue_run(
@@ -712,11 +742,16 @@ impl Core {
         id: &str,
         edited_code: Option<String>,
         note: Option<String>,
+        release_when_done: bool,
     ) -> Result<()> {
         let block = block_mut(&mut state, id)?;
         if !matches!(block.state, BlockState::Pending | BlockState::Saved) {
             return Err("block is not waiting for a run".into());
         }
+        if release_when_done && !block.proposed_by_agent() {
+            return Err("only an agent's block waits for a read approval".into());
+        }
+        block.release_when_done = release_when_done;
         let edited_code = edited_code.map(|code| normalize_newlines(&code));
         if let Some(code) = edited_code.filter(|code| *code != block.code) {
             block.proposed_code = Some(std::mem::replace(&mut block.code, code));
@@ -782,6 +817,19 @@ impl Core {
             return Err("block has no output yet".into());
         }
         block.read = decision;
+        let notebook = block.notebook.clone();
+        drop(state);
+        self.notify_block(&notebook, id);
+        Ok(())
+    }
+
+    pub fn hold_read(&self, id: &str) -> Result<()> {
+        let mut state = self.state();
+        let block = block_mut(&mut state, id)?;
+        if !matches!(block.state, BlockState::Queued | BlockState::Running) {
+            return Err("block is not queued or running".into());
+        }
+        block.release_when_done = false;
         let notebook = block.notebook.clone();
         drop(state);
         self.notify_block(&notebook, id);
@@ -863,7 +911,9 @@ impl Core {
             value: value.to_string(),
         });
         let session = running.session.clone();
-        block_mut(&mut state, id)?.hidden_input_sent = true;
+        let block = block_mut(&mut state, id)?;
+        block.hidden_input_sent = true;
+        block.release_when_done = false;
         Ok(session)
     }
 
@@ -962,6 +1012,7 @@ impl Core {
         if !block.has_the_text_of(ran) {
             block.state = BlockState::Saved;
             block.output = None;
+            block.release_when_done = false;
             drop(state);
             return self.notify_block(&notebook, id);
         }
@@ -975,7 +1026,9 @@ impl Core {
                 block.state = BlockState::Failed;
             }
         }
-        if read_policy == Some(Policy::Auto) && block.proposed_by_agent() {
+        let released_by_a_click = std::mem::take(&mut block.release_when_done);
+        let released_by_policy = read_policy == Some(Policy::Auto);
+        if (released_by_policy || released_by_a_click) && block.proposed_by_agent() {
             block.read = ReadDecision::Released;
         }
         drop(state);

@@ -8,6 +8,7 @@ use chromiumoxide::cdp::browser_protocol::web_authn::{
     AddVirtualAuthenticatorParams, AuthenticatorProtocol, AuthenticatorTransport, EnableParams,
     VirtualAuthenticatorOptions,
 };
+use chromiumoxide::page::ScreenshotParams;
 use chromiumoxide::{Browser, BrowserConfig, Page};
 use futures::StreamExt;
 use serde_json::{Value, json};
@@ -253,6 +254,36 @@ impl Ui {
             ))
             .await;
         assert!(status < 400, "POST {path}: {status}");
+    }
+
+    async fn screenshot(&self, server: &Server, screen: &str) {
+        let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("screenshots");
+        std::fs::create_dir_all(&folder).unwrap();
+        self.page
+            .execute(SetDeviceMetricsOverrideParams::new(1280, 900, 1.0, false))
+            .await
+            .unwrap();
+        self.replace_text_of_this_run(server).await;
+        self.page
+            .save_screenshot(
+                ScreenshotParams::builder().full_page(true).build(),
+                folder.join(format!("{screen}.png")),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn replace_text_of_this_run(&self, server: &Server) {
+        let data_dir = server.dir.path().display().to_string();
+        let socket = &server.socket;
+        let _: bool = self
+            .eval(&format!(
+                "(() => {{ const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); \
+                 while (walk.nextNode()) {{ const text = walk.currentNode; \
+                 text.textContent = text.textContent.replaceAll({data_dir:?}, '/var/lib/ai-dev').replaceAll({socket:?}, 'ai-dev'); }} \
+                 return true; }})()"
+            ))
+            .await;
     }
 
     async fn eval<T: serde::de::DeserializeOwned>(&self, expression: &str) -> T {
@@ -870,6 +901,98 @@ async fn run_on_a_stopped_session_offers_to_start_it_and_a_finished_block_runs_a
     assert_never_reloaded(&ui).await;
 }
 
+const RUN_AND_LET_READ: &str = "button[hx-post$=\"/run-and-release\"]";
+
+#[tokio::test]
+async fn run_and_let_read_ends_with_the_agent_having_read_the_output() {
+    let _one = ONE_BROWSER_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    let agent = Agent::of(&server);
+    create_bash_session(&ui, &server, "sh").await;
+    open_live_notebook(&ui, &server, "nb").await;
+    let token = agent.join(&ui, "nb", "agent-a").await;
+    let id = agent
+        .propose(&token, "echo one-click-$((40 + 2))", "to read it at once")
+        .await;
+    let block = format!("#b-{id}");
+
+    ui.click(&format!("{block} {RUN_AND_LET_READ}")).await;
+    ui.wait_until(
+        "the badge says the agent read it",
+        &format!("document.querySelector('{block} .state')?.innerText === 'ran · agent read'"),
+    )
+    .await;
+
+    let read = agent
+        .call("read_block", json!({ "token": token, "block_id": id }))
+        .await;
+    assert!(
+        read["output"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("one-click-42"),
+        "{read}"
+    );
+    assert_never_reloaded(&ui).await;
+}
+
+#[tokio::test]
+async fn run_and_let_read_is_absent_under_an_auto_read_policy_and_on_my_own_block() {
+    let _one = ONE_BROWSER_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    let agent = Agent::of(&server);
+    create_bash_session(&ui, &server, "sh").await;
+    ui.click("form[action=\"/sessions/sh/stop\"] button").await;
+    ui.wait_until(
+        "sh shows as stopped",
+        "document.querySelector('form[action=\"/sessions/sh/start\"]')",
+    )
+    .await;
+    open_live_notebook(&ui, &server, "nb").await;
+    let token = agent.join(&ui, "nb", "agent-a").await;
+    let id = agent.propose(&token, "echo agents", "to compare").await;
+    let block = format!("#b-{id}");
+    ui.click("#composer textarea").await;
+    ui.type_into("#composer textarea", "echo mine").await;
+    ui.click("#composer button.ok").await;
+    ui.wait_until(
+        "my block waits for the stopped session",
+        "document.querySelector('#blocks .block.me .stopped')",
+    )
+    .await;
+
+    let on_the_agents_block: bool = ui
+        .eval(&format!(
+            "!!document.querySelector('{block} {RUN_AND_LET_READ}')"
+        ))
+        .await;
+    let on_my_block: bool = ui
+        .eval(&format!(
+            "!!document.querySelector('#blocks .block.me {RUN_AND_LET_READ}')"
+        ))
+        .await;
+    assert!(on_the_agents_block);
+    assert!(!on_my_block);
+
+    ui.post_from_the_page(
+        "/sessions/sh/policy",
+        "run_policy=ask&read_policy=auto&idle_minutes=30",
+    )
+    .await;
+    ui.wait_until(
+        "the agent's block drops the button under an auto read policy",
+        &format!(
+            "document.querySelector('{block} button.primary') && !document.querySelector('{block} {RUN_AND_LET_READ}')"
+        ),
+    )
+    .await;
+    assert_never_reloaded(&ui).await;
+}
+
 #[tokio::test]
 async fn a_running_block_takes_hidden_input_from_the_page_and_can_be_interrupted() {
     let _one = ONE_BROWSER_AT_A_TIME
@@ -919,4 +1042,50 @@ async fn a_running_block_takes_hidden_input_from_the_page_and_can_be_interrupted
         .await;
     ui.wait_until("the interrupted block ended", &format!("document.querySelector('{second} .state')?.innerText.includes('waiting for read approval')")).await;
     assert_never_reloaded(&ui).await;
+}
+
+#[tokio::test]
+#[ignore = "rewrites screenshots/; run with --ignored after a screen changes"]
+async fn screenshots_of_an_agent_block_run_and_let_read() {
+    let _one = ONE_BROWSER_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    let agent = Agent::of(&server);
+    create_bash_session(&ui, &server, "sh").await;
+    open_live_notebook(&ui, &server, "nb").await;
+    let token = agent.join(&ui, "nb", "agent-a").await;
+    let id = agent
+        .propose(
+            &token,
+            "sleep 3; echo disk-$((40 + 2))-percent-full",
+            "to see how full the disk is",
+        )
+        .await;
+    let block = format!("#b-{id}");
+
+    ui.wait_until(
+        "the proposed block shows its buttons",
+        &format!("document.querySelector('{block} {RUN_AND_LET_READ}')"),
+    )
+    .await;
+    ui.screenshot(&server, "notebook-agent-block-proposed")
+        .await;
+
+    ui.click(&format!("{block} {RUN_AND_LET_READ}")).await;
+    ui.wait_until(
+        "the running block shows the typed command and says the agent reads when done",
+        &format!("document.querySelector('{block} .state')?.innerText === 'running · agent reads when done' \
+                  && document.querySelector('{block} pre.out')?.innerText.includes('percent-full')"),
+    )
+    .await;
+    ui.screenshot(&server, "notebook-agent-reads-when-done")
+        .await;
+
+    ui.wait_until(
+        "the block says the agent read it",
+        &format!("document.querySelector('{block} .state')?.innerText === 'ran · agent read'"),
+    )
+    .await;
+    ui.screenshot(&server, "notebook-agent-read").await;
 }

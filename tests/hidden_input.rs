@@ -210,6 +210,32 @@ async fn a_value_that_spells_part_of_the_marker_text_leaves_the_marker_intact() 
 }
 
 #[tokio::test]
+async fn hidden_input_takes_back_a_one_click_release() {
+    let h = harness_with_bash_session().await;
+    let block = h
+        .core
+        .add_block(
+            "nb",
+            "sh",
+            ASKS_FOR_A_PASSWORD_AND_DISCARDS_TYPED_AHEAD_TEXT,
+            "agent-a",
+        )
+        .unwrap();
+    h.core
+        .approve_run_and_release(&block.id, None, None)
+        .unwrap();
+    wait_for_output_containing(&h.core, &block.id, "password:").await;
+
+    h.core
+        .send_hidden_input(&block.id, "hunter2hunter2")
+        .await
+        .unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert_eq!(done.read, ReadDecision::Undecided);
+}
+
+#[tokio::test]
 async fn read_is_refused_on_a_running_block() {
     let h = harness_with_bash_session().await;
     let block = run_block(&h.core, "echo started; sleep 3").await;

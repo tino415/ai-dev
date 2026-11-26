@@ -13,8 +13,13 @@ nix build .#ai-dev
 ## Screenshots
 
 A UI PR updates the image of each screen it changes in `screenshots/` and adds one for a new
-screen. Each image is named by the screen it shows and overwritten in place, so the PR's diff shows
-before and after. Take them with the dev shell's chromium against the built binary.
+screen. Each image is named by the screen it shows, `<screen>-<state>.png` when a screen is shown in
+several states, and overwritten in place, so the PR's diff shows before and after. The ignored `screenshots_of_*` tests in `tests/e2e.rs` take them with the dev
+shell's chromium against the built binary; a new screen gets a test of its own there.
+
+```
+nix develop -c cargo test --test e2e screenshots_of -- --ignored
+```
 
 ## Formatting
 
