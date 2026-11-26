@@ -952,18 +952,14 @@ async fn run_and_let_read_is_absent_under_an_auto_read_policy_and_on_my_own_bloc
         "run_policy=ask&read_policy=auto&idle_minutes=30",
     )
     .await;
-    ui.open(&server.url("/n/nb")).await;
     ui.wait_until(
-        "the agent's block is there again",
-        &format!("document.querySelector('{block} button.primary')"),
+        "the agent's block drops the button under an auto read policy",
+        &format!(
+            "document.querySelector('{block} button.primary') && !document.querySelector('{block} {RUN_AND_LET_READ}')"
+        ),
     )
     .await;
-    let under_auto_read: bool = ui
-        .eval(&format!(
-            "!!document.querySelector('{block} {RUN_AND_LET_READ}')"
-        ))
-        .await;
-    assert!(!under_auto_read);
+    assert_never_reloaded(&ui).await;
 }
 
 #[tokio::test]

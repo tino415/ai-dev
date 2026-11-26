@@ -344,6 +344,7 @@ fn block_view(version: u64, core: &Core, block: &Block) -> String {
         return format!("<div {live} hidden></div>");
     }
     let by_agent = block.proposed_by_agent();
+    let reads_wait_for_a_click = reads_wait_for_a_click(core, block);
     let (badge, state) = state_badge(block);
     let why = block
         .why
@@ -368,9 +369,9 @@ fn block_view(version: u64, core: &Core, block: &Block) -> String {
             "me".to_string()
         },
         session = esc(&block.session),
-        body = code_and_actions(block, reads_wait_for_a_click(core, block)),
+        body = code_and_actions(block, reads_wait_for_a_click),
         output = output_view(block),
-        hold_read = hold_read_button(block),
+        hold_read = hold_read_button(block, reads_wait_for_a_click),
         hidden_input = hidden_input_form(block),
     )
 }
@@ -475,9 +476,9 @@ fn code_and_actions(block: &Block, reads_wait_for_a_click: bool) -> String {
     format!("<pre>{}</pre>{edited}{note}{rerun}", code_html(&block.code))
 }
 
-fn hold_read_button(block: &Block) -> String {
+fn hold_read_button(block: &Block, reads_wait_for_a_click: bool) -> String {
     let queued_or_running = matches!(block.state, BlockState::Queued | BlockState::Running);
-    if !(block.release_when_done && queued_or_running) {
+    if !(block.release_when_done && queued_or_running && reads_wait_for_a_click) {
         return String::new();
     }
     format!(
@@ -503,8 +504,13 @@ fn session_stopped_line(block: &Block) -> String {
     if !block.session_stopped {
         return String::new();
     }
+    let release = if block.release_when_done {
+        "; once it runs, the agent reads the output when the block ends"
+    } else {
+        ""
+    };
     format!(
-        "<div class=\"why stopped\">Session {session} is not running</div>\
+        "<div class=\"why stopped\">Session {session} is not running{release}</div>\
 <div class=\"actions\"><button class=\"primary\" hx-post=\"/b/{id}/start-and-run\" data-working=\"Starting…\">Start {session} and run</button>\
 <button class=\"no\" hx-post=\"/b/{id}/cancel-start\" data-working=\"…\">Cancel</button></div>",
         session = esc(&block.session),

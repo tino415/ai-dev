@@ -657,6 +657,22 @@ async fn start_and_run_keeps_the_release_of_the_first_click() {
 }
 
 #[tokio::test]
+async fn cancelling_the_start_drops_the_release_of_the_first_click() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    stopped_bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo x", "agent-a").unwrap();
+    h.core
+        .approve_run_and_release(&block.id, None, None)
+        .unwrap();
+    wait_for_stopped_line(&h.core, &block.id).await;
+
+    h.core.cancel_start(&block.id).unwrap();
+
+    assert!(!h.core.block(&block.id).unwrap().release_when_done);
+}
+
+#[tokio::test]
 async fn run_again_after_a_one_click_run_waits_for_read_approval() {
     let h = harness();
     h.core.create_notebook("nb").unwrap();

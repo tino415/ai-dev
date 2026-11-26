@@ -301,6 +301,12 @@ impl Core {
             return Err("names use a-z, 0-9, - and _".into());
         }
         let mut state = self.state();
+        let blocks_whose_buttons_follow_the_policy: Vec<(String, String)> = state
+            .blocks
+            .iter()
+            .filter(|b| b.session == def.name && b.proposed_by_agent() && !b.state.is_dropped())
+            .map(|b| (b.notebook.clone(), b.id.clone()))
+            .collect();
         match state
             .persisted
             .sessions
@@ -311,7 +317,11 @@ impl Core {
             None => state.persisted.sessions.push(def),
         }
         self.save_state(&state)?;
+        drop(state);
         self.notify(Change::Sessions);
+        for (notebook, id) in blocks_whose_buttons_follow_the_policy {
+            self.notify_block(&notebook, &id);
+        }
         Ok(())
     }
 
@@ -682,6 +692,7 @@ impl Core {
     }
 
     pub fn cancel_start(&self, id: &str) -> Result<()> {
+        block_mut(&mut self.state(), id)?.release_when_done = false;
         self.set_session_stopped(id, false)
     }
 
@@ -900,7 +911,9 @@ impl Core {
             value: value.to_string(),
         });
         let session = running.session.clone();
-        block_mut(&mut state, id)?.hidden_input_sent = true;
+        let block = block_mut(&mut state, id)?;
+        block.hidden_input_sent = true;
+        block.release_when_done = false;
         Ok(session)
     }
 
