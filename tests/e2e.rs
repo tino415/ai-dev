@@ -8,6 +8,7 @@ use chromiumoxide::cdp::browser_protocol::web_authn::{
     AddVirtualAuthenticatorParams, AuthenticatorProtocol, AuthenticatorTransport, EnableParams,
     VirtualAuthenticatorOptions,
 };
+use chromiumoxide::page::ScreenshotParams;
 use chromiumoxide::{Browser, BrowserConfig, Page};
 use futures::StreamExt;
 use serde_json::{Value, json};
@@ -253,6 +254,36 @@ impl Ui {
             ))
             .await;
         assert!(status < 400, "POST {path}: {status}");
+    }
+
+    async fn screenshot(&self, server: &Server, screen: &str) {
+        let folder = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("screenshots");
+        std::fs::create_dir_all(&folder).unwrap();
+        self.page
+            .execute(SetDeviceMetricsOverrideParams::new(1280, 900, 1.0, false))
+            .await
+            .unwrap();
+        self.replace_text_of_this_run(server).await;
+        self.page
+            .save_screenshot(
+                ScreenshotParams::builder().full_page(true).build(),
+                folder.join(format!("{screen}.png")),
+            )
+            .await
+            .unwrap();
+    }
+
+    async fn replace_text_of_this_run(&self, server: &Server) {
+        let data_dir = server.dir.path().display().to_string();
+        let socket = &server.socket;
+        let _: bool = self
+            .eval(&format!(
+                "(() => {{ const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT); \
+                 while (walk.nextNode()) {{ const text = walk.currentNode; \
+                 text.textContent = text.textContent.replaceAll({data_dir:?}, '/var/lib/ai-dev').replaceAll({socket:?}, 'ai-dev'); }} \
+                 return true; }})()"
+            ))
+            .await;
     }
 
     async fn eval<T: serde::de::DeserializeOwned>(&self, expression: &str) -> T {
@@ -1011,4 +1042,50 @@ async fn a_running_block_takes_hidden_input_from_the_page_and_can_be_interrupted
         .await;
     ui.wait_until("the interrupted block ended", &format!("document.querySelector('{second} .state')?.innerText.includes('waiting for read approval')")).await;
     assert_never_reloaded(&ui).await;
+}
+
+#[tokio::test]
+#[ignore = "rewrites screenshots/; run with --ignored after a screen changes"]
+async fn screenshots_of_an_agent_block_run_and_let_read() {
+    let _one = ONE_BROWSER_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    let agent = Agent::of(&server);
+    create_bash_session(&ui, &server, "sh").await;
+    open_live_notebook(&ui, &server, "nb").await;
+    let token = agent.join(&ui, "nb", "agent-a").await;
+    let id = agent
+        .propose(
+            &token,
+            "sleep 3; echo disk-$((40 + 2))-percent-full",
+            "to see how full the disk is",
+        )
+        .await;
+    let block = format!("#b-{id}");
+
+    ui.wait_until(
+        "the proposed block shows its buttons",
+        &format!("document.querySelector('{block} {RUN_AND_LET_READ}')"),
+    )
+    .await;
+    ui.screenshot(&server, "notebook-agent-block-proposed")
+        .await;
+
+    ui.click(&format!("{block} {RUN_AND_LET_READ}")).await;
+    ui.wait_until(
+        "the running block shows the typed command and says the agent reads when done",
+        &format!("document.querySelector('{block} .state')?.innerText === 'running · agent reads when done' \
+                  && document.querySelector('{block} pre.out')?.innerText.includes('percent-full')"),
+    )
+    .await;
+    ui.screenshot(&server, "notebook-agent-reads-when-done")
+        .await;
+
+    ui.wait_until(
+        "the block says the agent read it",
+        &format!("document.querySelector('{block} .state')?.innerText === 'ran · agent read'"),
+    )
+    .await;
+    ui.screenshot(&server, "notebook-agent-read").await;
 }
