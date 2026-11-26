@@ -38,6 +38,8 @@ An agent calls `join_notebook` and gets a link; after you admit it in the notebo
 `join_notebook` again returns a notebook token that every other tool takes. Tokens last until revoked;
 an agent that joins again under the same name replaces its earlier token.
 `propose_block` and `propose_session` take a `why`, which the notebook page shows above the proposal.
+In a session whose read policy is ask, "Run and let read" on a proposed block runs it and lets the
+agent read the output when the block ends; "Ask me before the agent reads" takes that back while it runs.
 
 The endpoint is stateless: a call needs no `mcp-session-id`, so a restart of ai-dev does not break a
 connected agent.

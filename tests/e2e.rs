@@ -870,6 +870,102 @@ async fn run_on_a_stopped_session_offers_to_start_it_and_a_finished_block_runs_a
     assert_never_reloaded(&ui).await;
 }
 
+const RUN_AND_LET_READ: &str = "button[hx-post$=\"/run-and-release\"]";
+
+#[tokio::test]
+async fn run_and_let_read_ends_with_the_agent_having_read_the_output() {
+    let _one = ONE_BROWSER_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    let agent = Agent::of(&server);
+    create_bash_session(&ui, &server, "sh").await;
+    open_live_notebook(&ui, &server, "nb").await;
+    let token = agent.join(&ui, "nb", "agent-a").await;
+    let id = agent
+        .propose(&token, "echo one-click-$((40 + 2))", "to read it at once")
+        .await;
+    let block = format!("#b-{id}");
+
+    ui.click(&format!("{block} {RUN_AND_LET_READ}")).await;
+    ui.wait_until(
+        "the badge says the agent read it",
+        &format!("document.querySelector('{block} .state')?.innerText === 'ran · agent read'"),
+    )
+    .await;
+
+    let read = agent
+        .call("read_block", json!({ "token": token, "block_id": id }))
+        .await;
+    assert!(
+        read["output"]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("one-click-42"),
+        "{read}"
+    );
+    assert_never_reloaded(&ui).await;
+}
+
+#[tokio::test]
+async fn run_and_let_read_is_absent_under_an_auto_read_policy_and_on_my_own_block() {
+    let _one = ONE_BROWSER_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    let agent = Agent::of(&server);
+    create_bash_session(&ui, &server, "sh").await;
+    ui.click("form[action=\"/sessions/sh/stop\"] button").await;
+    ui.wait_until(
+        "sh shows as stopped",
+        "document.querySelector('form[action=\"/sessions/sh/start\"]')",
+    )
+    .await;
+    open_live_notebook(&ui, &server, "nb").await;
+    let token = agent.join(&ui, "nb", "agent-a").await;
+    let id = agent.propose(&token, "echo agents", "to compare").await;
+    let block = format!("#b-{id}");
+    ui.click("#composer textarea").await;
+    ui.type_into("#composer textarea", "echo mine").await;
+    ui.click("#composer button.ok").await;
+    ui.wait_until(
+        "my block waits for the stopped session",
+        "document.querySelector('#blocks .block.me .stopped')",
+    )
+    .await;
+
+    let on_the_agents_block: bool = ui
+        .eval(&format!(
+            "!!document.querySelector('{block} {RUN_AND_LET_READ}')"
+        ))
+        .await;
+    let on_my_block: bool = ui
+        .eval(&format!(
+            "!!document.querySelector('#blocks .block.me {RUN_AND_LET_READ}')"
+        ))
+        .await;
+    assert!(on_the_agents_block);
+    assert!(!on_my_block);
+
+    ui.post_from_the_page(
+        "/sessions/sh/policy",
+        "run_policy=ask&read_policy=auto&idle_minutes=30",
+    )
+    .await;
+    ui.open(&server.url("/n/nb")).await;
+    ui.wait_until(
+        "the agent's block is there again",
+        &format!("document.querySelector('{block} button.primary')"),
+    )
+    .await;
+    let under_auto_read: bool = ui
+        .eval(&format!(
+            "!!document.querySelector('{block} {RUN_AND_LET_READ}')"
+        ))
+        .await;
+    assert!(!under_auto_read);
+}
+
 #[tokio::test]
 async fn a_running_block_takes_hidden_input_from_the_page_and_can_be_interrupted() {
     let _one = ONE_BROWSER_AT_A_TIME

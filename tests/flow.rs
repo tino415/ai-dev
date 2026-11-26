@@ -553,6 +553,127 @@ async fn run_again_on_an_agents_block_waits_for_read_approval_again() {
 }
 
 #[tokio::test]
+async fn run_and_release_lets_the_agent_read_without_a_release_click() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h
+        .core
+        .add_block("nb", "sh", "echo one-click", "agent-a")
+        .unwrap();
+
+    h.core
+        .approve_run_and_release(&block.id, None, None)
+        .unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert!(done.output.unwrap().contains("one-click"));
+    assert_eq!(done.read, ReadDecision::Released);
+}
+
+#[tokio::test]
+async fn holding_the_read_while_running_leaves_the_output_waiting_for_a_release() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h
+        .core
+        .add_block("nb", "sh", "sleep 2; echo held", "agent-a")
+        .unwrap();
+    h.core
+        .approve_run_and_release(&block.id, None, None)
+        .unwrap();
+    wait_for(&h.core, &block.id, BlockState::Running).await;
+
+    h.core.hold_read(&block.id).unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert!(done.output.unwrap().contains("held"));
+    assert_eq!(done.read, ReadDecision::Undecided);
+}
+
+#[tokio::test]
+async fn holding_the_read_of_a_finished_block_is_refused() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo one", "agent-a").unwrap();
+    h.core.approve_run(&block.id, None, None).unwrap();
+    wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert!(h.core.hold_read(&block.id).is_err());
+}
+
+#[tokio::test]
+async fn a_failing_block_run_and_released_is_released() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h
+        .core
+        .add_block("nb", "sh", "echo {{undefined}}", "agent-a")
+        .unwrap();
+
+    h.core
+        .approve_run_and_release(&block.id, None, None)
+        .unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Failed).await;
+
+    assert_eq!(done.read, ReadDecision::Released);
+}
+
+#[tokio::test]
+async fn run_and_release_on_a_block_i_wrote_is_refused() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo mine", HUMAN).unwrap();
+
+    let refused = h.core.approve_run_and_release(&block.id, None, None);
+
+    assert!(refused.is_err());
+    assert_eq!(h.core.block(&block.id).unwrap().state, BlockState::Pending);
+}
+
+#[tokio::test]
+async fn start_and_run_keeps_the_release_of_the_first_click() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    stopped_bash_session(&h.core, "sh").await;
+    let block = h
+        .core
+        .add_block("nb", "sh", "echo after-start", "agent-a")
+        .unwrap();
+    h.core
+        .approve_run_and_release(&block.id, None, None)
+        .unwrap();
+    wait_for_stopped_line(&h.core, &block.id).await;
+
+    h.core.start_and_run(&block.id).await.unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert!(done.output.unwrap().contains("after-start"));
+    assert_eq!(done.read, ReadDecision::Released);
+}
+
+#[tokio::test]
+async fn run_again_after_a_one_click_run_waits_for_read_approval() {
+    let h = harness();
+    h.core.create_notebook("nb").unwrap();
+    bash_session(&h.core, "sh").await;
+    let block = h.core.add_block("nb", "sh", "echo one", "agent-a").unwrap();
+    h.core
+        .approve_run_and_release(&block.id, None, None)
+        .unwrap();
+    wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    h.core.rerun_block(&block.id).unwrap();
+    let again = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert_eq!(again.read, ReadDecision::Undecided);
+}
+
+#[tokio::test]
 async fn an_auto_run_proposal_on_a_stopped_session_stays_proposed() {
     let h = harness();
     h.core.create_notebook("nb").unwrap();

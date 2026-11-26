@@ -64,6 +64,8 @@ pub fn router(app: App) -> Router {
             post(stop_notebook_session),
         )
         .route("/b/{id}/run", post(run_block))
+        .route("/b/{id}/run-and-release", post(run_and_release_block))
+        .route("/b/{id}/hold-read", post(hold_read))
         .route("/b/{id}/rerun", post(rerun_block))
         .route("/b/{id}/input", post(send_hidden_input))
         .route("/b/{id}/interrupt", post(interrupt_block))
@@ -510,6 +512,23 @@ async fn run_block(
     app.core
         .approve_run(&id, form.code, form.note)
         .map_err(bad)?;
+    Ok(answer_for_block(&app, &headers, &id).await)
+}
+
+async fn run_and_release_block(
+    State(app): State<App>,
+    Path(id): Path<String>,
+    headers: HeaderMap,
+    Form(form): Form<RunForm>,
+) -> Answer {
+    app.core
+        .approve_run_and_release(&id, form.code, form.note)
+        .map_err(bad)?;
+    Ok(answer_for_block(&app, &headers, &id).await)
+}
+
+async fn hold_read(State(app): State<App>, Path(id): Path<String>, headers: HeaderMap) -> Answer {
+    app.core.hold_read(&id).map_err(bad)?;
     Ok(answer_for_block(&app, &headers, &id).await)
 }
 
