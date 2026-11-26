@@ -2,9 +2,10 @@
 
 ## Merge gate
 
-A PR merges when both pass on the head to merge:
+A PR merges when all three pass on the head to merge:
 
 ```
+nix develop -c cargo fmt --check
 nix develop -c cargo test
 nix build .#ai-dev
 ```
