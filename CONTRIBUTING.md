@@ -22,7 +22,3 @@ before and after. Take them with the dev shell's chromium against the built bina
 ```
 nix develop -c cargo fmt
 ```
-
-## Deploy
-
-A merged PR is live only after the pin bump in the system repo.
