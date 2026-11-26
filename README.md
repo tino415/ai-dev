@@ -51,6 +51,8 @@ nix develop -c cargo test
 `tests/e2e.rs` drives a headless chromium from the dev shell against the binary, started with the
 unit's narrow environment.
 
+The merge gate is in [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## Icons
 
 `src/icons/*.svg` are the sources of the PNGs in `src/static/`; after changing one, render it again with
