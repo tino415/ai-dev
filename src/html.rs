@@ -93,8 +93,7 @@ const SCRIPTS: &str = "<script src=\"/static/htmx-2.0.11.min.js\"></script>\
 const NAV: &str = "<nav><a href=\"/\">Notebooks</a><a href=\"/sessions\">Sessions</a><a href=\"/profiles\">Profiles</a>\
 <form method=\"post\" action=\"/logout\"><button>Sign out</button></form></nav>";
 
-const FLASH: &str =
-    "<div id=\"flash\" class=\"flash\" role=\"alert\" hidden><pre></pre><button type=\"button\">Close</button></div>";
+const FLASH: &str = "<div id=\"flash\" class=\"flash\" role=\"alert\" hidden><pre></pre><button type=\"button\">Close</button></div>";
 
 pub fn esc(text: &str) -> String {
     text.replace('&', "&amp;")
@@ -149,7 +148,9 @@ fn footer_for(rev: Option<&str>) -> String {
     let version = concat!("ai-dev ", env!("CARGO_PKG_VERSION"));
     match rev {
         Some(rev) => {
-            let (commit, dirty) = rev.strip_suffix("-dirty").map_or((rev, ""), |commit| (commit, "-dirty"));
+            let (commit, dirty) = rev
+                .strip_suffix("-dirty")
+                .map_or((rev, ""), |commit| (commit, "-dirty"));
             let short: String = commit.chars().take(7).collect();
             format!(
                 "<footer class=\"meta\">{version} · <a href=\"{COMMIT_URL}{}\">{}{dirty}</a></footer>",
@@ -170,7 +171,9 @@ impl Keyboard {
     fn viewport(&self) -> &'static str {
         match self {
             Keyboard::CoversThePage => "width=device-width,initial-scale=1",
-            Keyboard::ShrinksThePage => "width=device-width,initial-scale=1,interactive-widget=resizes-content",
+            Keyboard::ShrinksThePage => {
+                "width=device-width,initial-scale=1,interactive-widget=resizes-content"
+            }
         }
     }
 }
@@ -212,6 +215,9 @@ mod tests {
 
     #[test]
     fn no_rev_shows_the_version_alone() {
-        assert_eq!(footer_for(None), "<footer class=\"meta\">ai-dev 0.1.0</footer>");
+        assert_eq!(
+            footer_for(None),
+            "<footer class=\"meta\">ai-dev 0.1.0</footer>"
+        );
     }
 }

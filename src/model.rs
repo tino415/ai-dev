@@ -155,7 +155,8 @@ impl Block {
     }
 
     pub fn has_the_text_of(&self, other: &Block) -> bool {
-        (&self.code, &self.session, &self.why, &self.author) == (&other.code, &other.session, &other.why, &other.author)
+        (&self.code, &self.session, &self.why, &self.author)
+            == (&other.code, &other.session, &other.why, &other.author)
     }
 }
 

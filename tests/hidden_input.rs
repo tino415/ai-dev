@@ -50,7 +50,12 @@ async fn wait_for(core: &Core, id: &str, wanted: BlockState) -> Block {
 
 async fn wait_for_output_containing(core: &Core, id: &str, text: &str) {
     for _ in 0..200 {
-        if core.block(id).unwrap().output.is_some_and(|output| output.contains(text)) {
+        if core
+            .block(id)
+            .unwrap()
+            .output
+            .is_some_and(|output| output.contains(text))
+        {
             return;
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -67,7 +72,10 @@ async fn hidden_input_answers_a_prompt_and_the_value_stays_out_of_the_output() {
     let block = run_block(&h.core, ASKS_FOR_A_PASSWORD_AND_DISCARDS_TYPED_AHEAD_TEXT).await;
     wait_for_output_containing(&h.core, &block.id, "password:").await;
 
-    h.core.send_hidden_input(&block.id, "hunter2hunter2").await.unwrap();
+    h.core
+        .send_hidden_input(&block.id, "hunter2hunter2")
+        .await
+        .unwrap();
     let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
 
     let output = done.output.unwrap();
@@ -80,10 +88,17 @@ async fn hidden_input_answers_a_prompt_and_the_value_stays_out_of_the_output() {
 #[tokio::test]
 async fn a_program_that_echoes_the_hidden_input_shows_it_masked() {
     let h = harness_with_bash_session().await;
-    let block = run_block(&h.core, ASKS_FOR_A_WORD_DISCARDS_TYPED_AHEAD_TEXT_AND_ECHOES_IT).await;
+    let block = run_block(
+        &h.core,
+        ASKS_FOR_A_WORD_DISCARDS_TYPED_AHEAD_TEXT_AND_ECHOES_IT,
+    )
+    .await;
     wait_for_output_containing(&h.core, &block.id, "again:").await;
 
-    h.core.send_hidden_input(&block.id, "swordfish").await.unwrap();
+    h.core
+        .send_hidden_input(&block.id, "swordfish")
+        .await
+        .unwrap();
     let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
 
     let output = done.output.unwrap();
@@ -96,7 +111,10 @@ async fn the_value_reaches_no_file_under_the_data_directory() {
     let h = harness_with_bash_session().await;
     let block = run_block(&h.core, ASKS_FOR_A_PASSWORD_AND_DISCARDS_TYPED_AHEAD_TEXT).await;
     wait_for_output_containing(&h.core, &block.id, "password:").await;
-    h.core.send_hidden_input(&block.id, "tr0ub4dor-and-3").await.unwrap();
+    h.core
+        .send_hidden_input(&block.id, "tr0ub4dor-and-3")
+        .await
+        .unwrap();
     wait_for(&h.core, &block.id, BlockState::Finished).await;
 
     let found = std::process::Command::new("grep")
@@ -142,16 +160,37 @@ async fn a_running_blocks_output_so_far_is_shown_to_the_owner_only() {
 async fn block_text_and_secret_values_appear_in_no_process_argument_list() {
     let h = harness_with_bash_session().await;
     h.core
-        .set_variable(ai_dev::core::VariableScope::Notebook("nb".into()), "pw", "needle-secret-value", true)
+        .set_variable(
+            ai_dev::core::VariableScope::Notebook("nb".into()),
+            "pw",
+            "needle-secret-value",
+            true,
+        )
         .unwrap();
     let block = run_block(&h.core, "echo needle-block-text {{pw}}; sleep 4").await;
     wait_for_output_containing(&h.core, &block.id, "needle-block-text").await;
 
-    let arguments = std::process::Command::new("ps").args(["-eo", "args"]).output().unwrap();
+    let arguments = std::process::Command::new("ps")
+        .args(["-eo", "args"])
+        .output()
+        .unwrap();
     let arguments = String::from_utf8_lossy(&arguments.stdout);
-    let tmux_lines: Vec<&str> = arguments.lines().filter(|line| line.contains("tmux")).collect();
-    assert!(!tmux_lines.iter().any(|line| line.contains("needle-secret-value")), "{tmux_lines:?}");
-    assert!(!tmux_lines.iter().any(|line| line.contains("needle-block-text")), "{tmux_lines:?}");
+    let tmux_lines: Vec<&str> = arguments
+        .lines()
+        .filter(|line| line.contains("tmux"))
+        .collect();
+    assert!(
+        !tmux_lines
+            .iter()
+            .any(|line| line.contains("needle-secret-value")),
+        "{tmux_lines:?}"
+    );
+    assert!(
+        !tmux_lines
+            .iter()
+            .any(|line| line.contains("needle-block-text")),
+        "{tmux_lines:?}"
+    );
 }
 
 #[tokio::test]
@@ -163,7 +202,11 @@ async fn a_value_that_spells_part_of_the_marker_text_leaves_the_marker_intact() 
     h.core.send_hidden_input(&block.id, "input").await.unwrap();
     let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
 
-    assert!(done.output.unwrap().contains("password: ‹hidden input sent›"));
+    assert!(
+        done.output
+            .unwrap()
+            .contains("password: ‹hidden input sent›")
+    );
 }
 
 #[tokio::test]
@@ -172,5 +215,9 @@ async fn read_is_refused_on_a_running_block() {
     let block = run_block(&h.core, "echo started; sleep 3").await;
     wait_for_output_containing(&h.core, &block.id, "started").await;
 
-    assert!(h.core.decide_read(&block.id, ReadDecision::Released).is_err());
+    assert!(
+        h.core
+            .decide_read(&block.id, ReadDecision::Released)
+            .is_err()
+    );
 }

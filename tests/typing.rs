@@ -7,7 +7,11 @@ use ai_dev::model::*;
 
 fn on_path(program: &str) -> PathBuf {
     std::env::var_os("PATH")
-        .and_then(|path| std::env::split_paths(&path).map(|dir| dir.join(program)).find(|p| p.exists()))
+        .and_then(|path| {
+            std::env::split_paths(&path)
+                .map(|dir| dir.join(program))
+                .find(|p| p.exists())
+        })
         .unwrap_or_else(|| panic!("{program} is not on PATH; run the tests in nix develop"))
 }
 
@@ -25,7 +29,8 @@ fn put_a_tmux_that_is_slow_to_press_enter_first_on_path(dir: &Path) {
     .unwrap();
     std::fs::set_permissions(&wrapper, std::fs::Permissions::from_mode(0o755)).unwrap();
     let path = std::env::join_paths(
-        std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
+        std::iter::once(dir.to_path_buf())
+            .chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
     )
     .unwrap();
     // SAFETY: this file holds one test, so no other thread reads the environment.
@@ -36,7 +41,9 @@ struct TmuxServer(String);
 
 impl Drop for TmuxServer {
     fn drop(&mut self) {
-        let _ = std::process::Command::new("tmux").args(["-L", &self.0, "kill-server"]).output();
+        let _ = std::process::Command::new("tmux")
+            .args(["-L", &self.0, "kill-server"])
+            .output();
     }
 }
 
@@ -54,7 +61,12 @@ async fn an_enter_that_reaches_a_busy_session_late_adds_no_blank_line_to_the_out
     core.start_session("sh").await.unwrap();
 
     let block = core
-        .add_block("nb", "sh", "sleep 0.05; echo one && sleep 0.5 && echo two", HUMAN)
+        .add_block(
+            "nb",
+            "sh",
+            "sleep 0.05; echo one && sleep 0.5 && echo two",
+            HUMAN,
+        )
         .unwrap();
     core.approve_run(&block.id, None, None).unwrap();
     let mut output = None;
@@ -68,5 +80,8 @@ async fn an_enter_that_reaches_a_busy_session_late_adds_no_blank_line_to_the_out
     }
 
     let output = output.expect("the block finished");
-    assert_eq!(output.trim_end(), "sleep 0.05; echo one && sleep 0.5 && echo two\none\ntwo");
+    assert_eq!(
+        output.trim_end(),
+        "sleep 0.05; echo one && sleep 0.5 && echo two\none\ntwo"
+    );
 }

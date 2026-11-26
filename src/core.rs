@@ -10,7 +10,7 @@ use tokio::sync::broadcast;
 
 use crate::model::*;
 use crate::notebook_file;
-use crate::tmux::{strip_terminal_escapes, AttachedClient, TerminalSize, Tmux};
+use crate::tmux::{AttachedClient, TerminalSize, Tmux, strip_terminal_escapes};
 use crate::vars;
 
 pub type Result<T> = std::result::Result<T, String>;
@@ -153,7 +153,12 @@ impl Core {
             changes_sent: AtomicU64::new(0),
         };
         let mut state = core.state();
-        let names: Vec<String> = state.persisted.notebooks.iter().map(|n| n.name.clone()).collect();
+        let names: Vec<String> = state
+            .persisted
+            .notebooks
+            .iter()
+            .map(|n| n.name.clone())
+            .collect();
         for name in names {
             core.compare_with_disk(&mut state, &name);
         }
@@ -225,7 +230,10 @@ impl Core {
     }
 
     pub fn notebook_file_error(&self, notebook: &str) -> Option<String> {
-        self.state().files.get(notebook).and_then(|file| file.unloadable.clone())
+        self.state()
+            .files
+            .get(notebook)
+            .and_then(|file| file.unloadable.clone())
     }
 
     pub fn notebooks(&self) -> Vec<Notebook> {
@@ -293,7 +301,12 @@ impl Core {
             return Err("names use a-z, 0-9, - and _".into());
         }
         let mut state = self.state();
-        match state.persisted.sessions.iter_mut().find(|s| s.name == def.name) {
+        match state
+            .persisted
+            .sessions
+            .iter_mut()
+            .find(|s| s.name == def.name)
+        {
             Some(existing) => *existing = def,
             None => state.persisted.sessions.push(def),
         }
@@ -370,7 +383,11 @@ impl Core {
         self.notify(Change::Sessions);
     }
 
-    pub async fn attach_terminal(&self, name: &str, size: TerminalSize) -> Result<(pty_process::Pty, AttachedClient)> {
+    pub async fn attach_terminal(
+        &self,
+        name: &str,
+        size: TerminalSize,
+    ) -> Result<(pty_process::Pty, AttachedClient)> {
         if !self.is_running(name).await {
             return Err(format!("session {name} is not running"));
         }
@@ -403,7 +420,9 @@ impl Core {
         let now = Instant::now();
         for def in self.session_defs() {
             let lock = self.session_lock(&def.name);
-            let Ok(_busy_starting_or_running) = lock.try_lock() else { continue };
+            let Ok(_busy_starting_or_running) = lock.try_lock() else {
+                continue;
+            };
             if !self.tmux.is_alive(&def.name).await {
                 let was_running = self.state().last_activity.remove(&def.name).is_some();
                 if was_running {
@@ -424,7 +443,13 @@ impl Core {
         }
     }
 
-    pub fn propose_session(&self, notebook: &str, agent: &str, def: SessionDef, why: &str) -> Result<SessionProposal> {
+    pub fn propose_session(
+        &self,
+        notebook: &str,
+        agent: &str,
+        def: SessionDef,
+        why: &str,
+    ) -> Result<SessionProposal> {
         if !valid_name(&def.name) {
             return Err("names use a-z, 0-9, - and _".into());
         }
@@ -507,11 +532,21 @@ impl Core {
         self.save_vars(&state)
     }
 
-    pub fn set_variable(&self, scope: VariableScope, name: &str, value: &str, secret: bool) -> Result<()> {
+    pub fn set_variable(
+        &self,
+        scope: VariableScope,
+        name: &str,
+        value: &str,
+        secret: bool,
+    ) -> Result<()> {
         let mut state = self.state();
         let set = match &scope {
-            VariableScope::Profile(profile) => state.vars.profiles.entry(profile.clone()).or_default(),
-            VariableScope::Notebook(notebook) => state.vars.notebooks.entry(notebook.clone()).or_default(),
+            VariableScope::Profile(profile) => {
+                state.vars.profiles.entry(profile.clone()).or_default()
+            }
+            VariableScope::Notebook(notebook) => {
+                state.vars.notebooks.entry(notebook.clone()).or_default()
+            }
         };
         set.insert(
             name.to_string(),
@@ -550,11 +585,24 @@ impl Core {
         self.state().blocks.iter().find(|b| b.id == id).cloned()
     }
 
-    pub fn add_block(self: &Arc<Self>, notebook: &str, session: &str, code: &str, author: &str) -> Result<Block> {
+    pub fn add_block(
+        self: &Arc<Self>,
+        notebook: &str,
+        session: &str,
+        code: &str,
+        author: &str,
+    ) -> Result<Block> {
         self.insert_block(notebook, session, code, author, None)
     }
 
-    pub fn propose_block(self: &Arc<Self>, notebook: &str, session: &str, code: &str, agent: &str, why: &str) -> Result<Block> {
+    pub fn propose_block(
+        self: &Arc<Self>,
+        notebook: &str,
+        session: &str,
+        code: &str,
+        agent: &str,
+        why: &str,
+    ) -> Result<Block> {
         let why = required_why(why)?;
         self.insert_block(notebook, session, code, agent, Some(why))
     }
@@ -647,7 +695,12 @@ impl Core {
         Ok(())
     }
 
-    pub fn approve_run(self: &Arc<Self>, id: &str, edited_code: Option<String>, note: Option<String>) -> Result<()> {
+    pub fn approve_run(
+        self: &Arc<Self>,
+        id: &str,
+        edited_code: Option<String>,
+        note: Option<String>,
+    ) -> Result<()> {
         let mut state = self.state();
         self.block_file_as_remembered(&mut state, id)?;
         self.queue_run(state, id, edited_code, note)
@@ -723,7 +776,9 @@ impl Core {
     pub fn decide_read(&self, id: &str, decision: ReadDecision) -> Result<()> {
         let mut state = self.state();
         let block = block_mut(&mut state, id)?;
-        if block.output.is_none() || !matches!(block.state, BlockState::Finished | BlockState::Failed) {
+        if block.output.is_none()
+            || !matches!(block.state, BlockState::Finished | BlockState::Failed)
+        {
             return Err("block has no output yet".into());
         }
         block.read = decision;
@@ -749,7 +804,11 @@ impl Core {
     async fn execute_block(&self, id: &str) {
         let Some(block) = self.block(id) else { return };
         let Some(def) = self.session(&block.session) else {
-            return self.finish_block(&block, Err("session was deleted".into()), &VariableSet::new());
+            return self.finish_block(
+                &block,
+                Err("session was deleted".into()),
+                &VariableSet::new(),
+            );
         };
         if !self.is_running(&def.name).await {
             self.set_block_state(id, BlockState::Pending);
@@ -795,8 +854,14 @@ impl Core {
     fn remember_hidden_input(&self, id: &str, value: &str) -> Result<String> {
         let mut state = self.state();
         let running = state.running.get_mut(id).ok_or("block is not running")?;
-        let sent_at = self.tmux.log_len(&running.session).saturating_sub(running.log_offset);
-        running.hidden_inputs.push(HiddenInput { sent_at, value: value.to_string() });
+        let sent_at = self
+            .tmux
+            .log_len(&running.session)
+            .saturating_sub(running.log_offset);
+        running.hidden_inputs.push(HiddenInput {
+            sent_at,
+            value: value.to_string(),
+        });
         let session = running.session.clone();
         block_mut(&mut state, id)?.hidden_input_sent = true;
         Ok(session)
@@ -804,7 +869,9 @@ impl Core {
 
     fn forget_last_hidden_input(&self, id: &str) {
         let mut state = self.state();
-        let Some(running) = state.running.get_mut(id) else { return };
+        let Some(running) = state.running.get_mut(id) else {
+            return;
+        };
         running.hidden_inputs.pop();
         let none_left = running.hidden_inputs.is_empty();
         if let (true, Ok(block)) = (none_left, block_mut(&mut state, id)) {
@@ -814,7 +881,11 @@ impl Core {
 
     async fn retype_end_marker(&self, id: &str, session: &str) {
         tokio::time::sleep(PROMPT_SETTLE).await;
-        let command = self.state().running.get(id).map(|running| running.end_marker_command.clone());
+        let command = self
+            .state()
+            .running
+            .get(id)
+            .map(|running| running.end_marker_command.clone());
         if let Some(command) = command {
             let _ = self.tmux.type_lines(session, &command).await;
         }
@@ -828,7 +899,9 @@ impl Core {
 
     fn publish_output_so_far(&self, id: &str, output: String) {
         let mut state = self.state();
-        let Ok(block) = block_mut(&mut state, id) else { return };
+        let Ok(block) = block_mut(&mut state, id) else {
+            return;
+        };
         if block.state != BlockState::Running || block.output.as_deref() == Some(&output) {
             return;
         }
@@ -838,9 +911,19 @@ impl Core {
         self.notify_block(&notebook, id);
     }
 
-    fn with_hidden_inputs_masked(&self, id: Option<&str>, raw: &str, clean: impl FnOnce(&str) -> String) -> String {
+    fn with_hidden_inputs_masked(
+        &self,
+        id: Option<&str>,
+        raw: &str,
+        clean: impl FnOnce(&str) -> String,
+    ) -> String {
         let hidden: Vec<(usize, String)> = id
-            .and_then(|id| self.state().running.get(id).map(|running| running.hidden_inputs.clone()))
+            .and_then(|id| {
+                self.state()
+                    .running
+                    .get(id)
+                    .map(|running| running.hidden_inputs.clone())
+            })
             .unwrap_or_default()
             .into_iter()
             .map(|input| (input.sent_at, input.value))
@@ -851,7 +934,11 @@ impl Core {
                 marked.insert(*sent_at, HIDDEN_INPUT_PLACEHOLDER);
             }
         }
-        let mut values: Vec<&str> = hidden.iter().map(|(_, value)| value.as_str()).filter(|v| !v.is_empty()).collect();
+        let mut values: Vec<&str> = hidden
+            .iter()
+            .map(|(_, value)| value.as_str())
+            .filter(|v| !v.is_empty())
+            .collect();
         values.sort_by_key(|value| std::cmp::Reverse(value.len()));
         values
             .into_iter()
@@ -868,7 +955,9 @@ impl Core {
             .iter()
             .find(|s| s.name == ran.session)
             .map(|s| s.read_policy);
-        let Ok(block) = block_mut(&mut state, id) else { return };
+        let Ok(block) = block_mut(&mut state, id) else {
+            return;
+        };
         let notebook = block.notebook.clone();
         if !block.has_the_text_of(ran) {
             block.state = BlockState::Saved;
@@ -895,14 +984,22 @@ impl Core {
 
     fn set_block_state(&self, id: &str, new_state: BlockState) {
         let mut state = self.state();
-        let Ok(block) = block_mut(&mut state, id) else { return };
+        let Ok(block) = block_mut(&mut state, id) else {
+            return;
+        };
         block.state = new_state;
         let notebook = block.notebook.clone();
         drop(state);
         self.notify_block(&notebook, id);
     }
 
-    async fn run_text(&self, block_id: Option<&str>, def: &SessionDef, set: &VariableSet, code: &str) -> Result<String> {
+    async fn run_text(
+        &self,
+        block_id: Option<&str>,
+        def: &SessionDef,
+        set: &VariableSet,
+        code: &str,
+    ) -> Result<String> {
         if !self.is_running(&def.name).await {
             return Err(format!("session {} is not running", def.name));
         }
@@ -942,7 +1039,9 @@ impl Core {
                 return Ok(vars::mask(&output, set));
             }
             let output_so_far = || {
-                self.with_hidden_inputs_masked(block_id, &text, |raw| clean_output(raw, &marker, &typed, Ended::Early))
+                self.with_hidden_inputs_masked(block_id, &text, |raw| {
+                    clean_output(raw, &marker, &typed, Ended::Early)
+                })
             };
             if Instant::now() >= next_liveness_check {
                 if !self.is_running(&def.name).await {
@@ -987,10 +1086,9 @@ impl Core {
         }
         let mut state = self.state();
         notebook_mut(&mut state, notebook)?;
-        let existing = state
-            .joins
-            .iter_mut()
-            .find(|j| j.notebook == notebook && j.agent == agent && !matches!(j.status, JoinStatus::Delivered));
+        let existing = state.joins.iter_mut().find(|j| {
+            j.notebook == notebook && j.agent == agent && !matches!(j.status, JoinStatus::Delivered)
+        });
         match existing {
             Some(join) => match join.status.clone() {
                 JoinStatus::Approved { token } => {
@@ -1040,7 +1138,9 @@ impl Core {
             .find(|j| j.id == id && matches!(j.status, JoinStatus::Pending))
             .ok_or("unknown join request")?;
         let token = secret_token();
-        join.status = JoinStatus::Approved { token: token.clone() };
+        join.status = JoinStatus::Approved {
+            token: token.clone(),
+        };
         let (notebook, agent) = (join.notebook.clone(), join.agent.clone());
         let entry = notebook_mut(&mut state, &notebook)?;
         entry.tokens.retain(|t| t.agent != agent);
@@ -1057,7 +1157,11 @@ impl Core {
 
     pub fn deny_join(&self, id: &str) -> Result<()> {
         let mut state = self.state();
-        let notebook = state.joins.iter().find(|j| j.id == id).map(|j| j.notebook.clone());
+        let notebook = state
+            .joins
+            .iter()
+            .find(|j| j.id == id)
+            .map(|j| j.notebook.clone());
         state.joins.retain(|j| j.id != id);
         drop(state);
         if let Some(notebook) = notebook {
@@ -1089,16 +1193,20 @@ impl Core {
 
     pub fn admit(&self, token: &str) -> Option<Admission> {
         let hash = hash_token(token);
-        self.state().persisted.notebooks.iter().find_map(|notebook| {
-            notebook
-                .tokens
-                .iter()
-                .find(|t| t.hash == hash)
-                .map(|t| Admission {
-                    notebook: notebook.name.clone(),
-                    agent: t.agent.clone(),
-                })
-        })
+        self.state()
+            .persisted
+            .notebooks
+            .iter()
+            .find_map(|notebook| {
+                notebook
+                    .tokens
+                    .iter()
+                    .find(|t| t.hash == hash)
+                    .map(|t| Admission {
+                        notebook: notebook.name.clone(),
+                        agent: t.agent.clone(),
+                    })
+            })
     }
 
     // passkeys
@@ -1113,7 +1221,10 @@ impl Core {
         self.save_state(&state)
     }
 
-    pub fn update_passkey_counter(&self, result: &webauthn_rs::prelude::AuthenticationResult) -> Result<()> {
+    pub fn update_passkey_counter(
+        &self,
+        result: &webauthn_rs::prelude::AuthenticationResult,
+    ) -> Result<()> {
         let mut state = self.state();
         for passkey in state.persisted.passkeys.iter_mut() {
             passkey.update_credential(result);
@@ -1160,22 +1271,33 @@ impl Core {
     fn file_as_remembered(&self, state: &mut State, notebook: &str) -> Result<()> {
         match self.compare_with_disk(state, notebook) {
             OnDisk::AsRemembered => Ok(()),
-            OnDisk::LoadedAgain => Err(format!("{notebook}.md changed on disk. It was loaded again and nothing ran.")),
+            OnDisk::LoadedAgain => Err(format!(
+                "{notebook}.md changed on disk. It was loaded again and nothing ran."
+            )),
             OnDisk::Unloadable(error) => Err(error),
         }
     }
 
     fn compare_with_disk(&self, state: &mut State, notebook: &str) -> OnDisk {
         let remembered = state.files.remove(notebook).unwrap_or_default();
-        let checked = read_notebook_text(&self.dir, notebook, &remembered.text_as_last_read_or_written)
-            .and_then(|text| loadable_blocks(state, notebook, &text).map(|saved| (text, saved)));
+        let checked = read_notebook_text(
+            &self.dir,
+            notebook,
+            &remembered.text_as_last_read_or_written,
+        )
+        .and_then(|text| loadable_blocks(state, notebook, &text).map(|saved| (text, saved)));
         let (on_disk, text) = match checked {
-            Ok((text, _)) if text == remembered.text_as_last_read_or_written => (OnDisk::AsRemembered, text),
+            Ok((text, _)) if text == remembered.text_as_last_read_or_written => {
+                (OnDisk::AsRemembered, text)
+            }
             Ok((text, saved)) => {
                 load_blocks(state, notebook, saved);
                 (OnDisk::LoadedAgain, text)
             }
-            Err(error) => (OnDisk::Unloadable(error), remembered.text_as_last_read_or_written),
+            Err(error) => (
+                OnDisk::Unloadable(error),
+                remembered.text_as_last_read_or_written,
+            ),
         };
         let unloadable = match &on_disk {
             OnDisk::Unloadable(error) => Some(error.clone()),
@@ -1259,28 +1381,44 @@ fn notebook_path(dir: &Path, notebook: &str) -> PathBuf {
 fn read_notebook_text(dir: &Path, notebook: &str, remembered: &str) -> Result<String> {
     match std::fs::read_to_string(notebook_path(dir, notebook)) {
         Ok(text) => Ok(text),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound && remembered.is_empty() => Ok(String::new()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(format!("{notebook}.md is missing")),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && remembered.is_empty() => {
+            Ok(String::new())
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Err(format!("{notebook}.md is missing"))
+        }
         Err(e) => Err(format!("{notebook}.md: {e}")),
     }
 }
 
-fn loadable_blocks(state: &State, notebook: &str, text: &str) -> Result<Vec<notebook_file::SavedBlock>> {
+fn loadable_blocks(
+    state: &State,
+    notebook: &str,
+    text: &str,
+) -> Result<Vec<notebook_file::SavedBlock>> {
     let saved = notebook_file::parse(text).map_err(|error| error.message(notebook))?;
-    let elsewhere = saved
-        .iter()
-        .find_map(|saved| state.blocks.iter().find(|b| b.notebook != notebook && b.id == saved.id));
+    let elsewhere = saved.iter().find_map(|saved| {
+        state
+            .blocks
+            .iter()
+            .find(|b| b.notebook != notebook && b.id == saved.id)
+    });
     match elsewhere {
-        Some(block) => Err(format!("{notebook}.md: block id {} is used in notebook {}", block.id, block.notebook)),
+        Some(block) => Err(format!(
+            "{notebook}.md: block id {} is used in notebook {}",
+            block.id, block.notebook
+        )),
         None => Ok(saved),
     }
 }
 
 fn load_blocks(state: &mut State, notebook: &str, saved: Vec<notebook_file::SavedBlock>) {
-    let (mut held, others): (Vec<Block>, Vec<Block>) =
-        std::mem::take(&mut state.blocks).into_iter().partition(|b| b.notebook == notebook);
+    let (mut held, others): (Vec<Block>, Vec<Block>) = std::mem::take(&mut state.blocks)
+        .into_iter()
+        .partition(|b| b.notebook == notebook);
     state.blocks = others;
-    let file_ids: std::collections::HashSet<String> = saved.iter().map(|saved| saved.id.clone()).collect();
+    let file_ids: std::collections::HashSet<String> =
+        saved.iter().map(|saved| saved.id.clone()).collect();
     let dropped_ones_the_file_never_lists = held
         .iter()
         .filter(|b| b.state.is_dropped() && !file_ids.contains(&b.id))
@@ -1288,7 +1426,11 @@ fn load_blocks(state: &mut State, notebook: &str, saved: Vec<notebook_file::Save
         .collect::<Vec<_>>();
     for saved in saved {
         let from_file = saved_block(notebook, saved);
-        let block = match held.iter().position(|b| b.id == from_file.id).map(|at| held.swap_remove(at)) {
+        let block = match held
+            .iter()
+            .position(|b| b.id == from_file.id)
+            .map(|at| held.swap_remove(at))
+        {
             Some(held) if !held.state.is_dropped() && held.has_the_text_of(&from_file) => held,
             Some(held) if matches!(held.state, BlockState::Queued | BlockState::Running) => Block {
                 code: from_file.code,
@@ -1322,7 +1464,9 @@ fn required_why(why: &str) -> Result<String> {
 fn keep_the_latest_token_per_agent(notebook: &mut Notebook) {
     let mut seen = std::collections::HashSet::new();
     notebook.tokens.reverse();
-    notebook.tokens.retain(|token| seen.insert(token.agent.clone()));
+    notebook
+        .tokens
+        .retain(|token| seen.insert(token.agent.clone()));
     notebook.tokens.reverse();
 }
 
@@ -1375,7 +1519,10 @@ mod tests {
             let marker = Marker::new();
             let typed = marker.command(preset.marker_template());
             assert!(!typed.contains(&marker.full()), "{preset:?}");
-            assert!(typed.contains(&marker.head) && typed.contains(&marker.tail), "{preset:?}");
+            assert!(
+                typed.contains(&marker.head) && typed.contains(&marker.tail),
+                "{preset:?}"
+            );
         }
     }
 
@@ -1390,7 +1537,10 @@ mod tests {
 
         let output = clean_output(&raw, &marker, &typed, Ended::AtTheMarker);
 
-        assert_eq!(output.trim_end(), "uname -s && echo checks-passed\nLinux\nchecks-passed");
+        assert_eq!(
+            output.trim_end(),
+            "uname -s && echo checks-passed\nLinux\nchecks-passed"
+        );
     }
 
     #[test]

@@ -13,7 +13,11 @@ pub enum Part {
 
 pub async fn layout(core: &Core, notebook: &str) -> String {
     let version = core.changes_so_far();
-    let blocks: String = core.blocks(notebook).iter().map(|block| block_view(version, block)).collect();
+    let blocks: String = core
+        .blocks(notebook)
+        .iter()
+        .map(|block| block_view(version, block))
+        .collect();
     let file_error = core
         .notebook_file_error(notebook)
         .map(|error| format!("<p class=\"why stopped\">{}</p>", esc(&error)))
@@ -40,7 +44,10 @@ pub fn subtitle(core: &Core, notebook: &str) -> String {
 pub async fn render(core: &Core, notebook: &str, part: Part) -> String {
     let version = core.changes_so_far();
     match part {
-        Part::Block(id) => core.block(&id).map(|block| block_view(version, &block)).unwrap_or_default(),
+        Part::Block(id) => core
+            .block(&id)
+            .map(|block| block_view(version, &block))
+            .unwrap_or_default(),
         Part::Sessions => sessions_panel(version, core, notebook, &core.sessions().await),
         Part::Variables => variables_panel(version, core, notebook),
         Part::Agents => agents_panel(version, core, notebook, &core.session_defs()),
@@ -50,13 +57,23 @@ pub async fn render(core: &Core, notebook: &str, part: Part) -> String {
 }
 
 fn live(id: &str, event: &str, version: u64) -> String {
-    format!("id=\"{id}\" data-guard data-v=\"{version}\" sse-swap=\"{event}\" hx-target=\"this\" hx-swap=\"outerHTML\"")
+    format!(
+        "id=\"{id}\" data-guard data-v=\"{version}\" sse-swap=\"{event}\" hx-target=\"this\" hx-swap=\"outerHTML\""
+    )
 }
 
 // sessions
 
-fn sessions_panel(version: u64, core: &Core, notebook: &str, sessions: &[(SessionDef, bool)]) -> String {
-    let used = core.notebook(notebook).map(|n| n.sessions).unwrap_or_default();
+fn sessions_panel(
+    version: u64,
+    core: &Core,
+    notebook: &str,
+    sessions: &[(SessionDef, bool)],
+) -> String {
+    let used = core
+        .notebook(notebook)
+        .map(|n| n.sessions)
+        .unwrap_or_default();
     let rows: String = sessions
         .iter()
         .filter(|(def, _)| used.contains(&def.name))
@@ -124,7 +141,11 @@ pub fn attach_line(core: &Core, def: &SessionDef, running: bool) -> String {
 }
 
 pub fn toggle_label(running: bool) -> (&'static str, &'static str) {
-    if running { ("stop", "Stopping…") } else { ("start", "Starting…") }
+    if running {
+        ("stop", "Stopping…")
+    } else {
+        ("start", "Starting…")
+    }
 }
 
 pub fn preset_name(def: &SessionDef) -> String {
@@ -155,12 +176,27 @@ fn variables_panel(version: u64, core: &Core, notebook: &str) -> String {
     let profiles: String = std::iter::once(String::new())
         .chain(variables.profiles.keys().cloned())
         .map(|name| {
-            let selected = if profile.as_deref().unwrap_or_default() == name { " selected" } else { "" };
-            let label = if name.is_empty() { "none".to_string() } else { esc(&name) };
-            format!("<option value=\"{}\"{selected}>{label}</option>", esc(&name))
+            let selected = if profile.as_deref().unwrap_or_default() == name {
+                " selected"
+            } else {
+                ""
+            };
+            let label = if name.is_empty() {
+                "none".to_string()
+            } else {
+                esc(&name)
+            };
+            format!(
+                "<option value=\"{}\"{selected}>{label}</option>",
+                esc(&name)
+            )
         })
         .collect();
-    let overrides = variables.notebooks.get(notebook).cloned().unwrap_or_default();
+    let overrides = variables
+        .notebooks
+        .get(notebook)
+        .cloned()
+        .unwrap_or_default();
     let rows: String = core
         .notebook_variables(notebook)
         .iter()
@@ -212,7 +248,10 @@ fn agents_panel(version: u64, core: &Core, notebook: &str, sessions: &[SessionDe
             )
         })
         .collect();
-    let tokens = core.notebook(notebook).map(|n| n.tokens).unwrap_or_default();
+    let tokens = core
+        .notebook(notebook)
+        .map(|n| n.tokens)
+        .unwrap_or_default();
     let admitted: String = tokens
         .iter()
         .map(|token| {
@@ -226,7 +265,10 @@ fn agents_panel(version: u64, core: &Core, notebook: &str, sessions: &[SessionDe
         })
         .collect();
     let nobody = if joins.is_empty() && tokens.is_empty() {
-        format!("<div>no agent yet; one calls join_notebook(\"{}\", its name)</div>", esc(notebook))
+        format!(
+            "<div>no agent yet; one calls join_notebook(\"{}\", its name)</div>",
+            esc(notebook)
+        )
     } else {
         String::new()
     };
@@ -248,8 +290,15 @@ fn agents_panel(version: u64, core: &Core, notebook: &str, sessions: &[SessionDe
 // proposed sessions
 
 fn proposals_view(version: u64, core: &Core, notebook: &str) -> String {
-    let blocks: String = core.notebook_proposals(notebook).iter().map(proposal_block).collect();
-    format!("<div {}>{blocks}</div>", live("proposals", "proposals", version))
+    let blocks: String = core
+        .notebook_proposals(notebook)
+        .iter()
+        .map(proposal_block)
+        .collect();
+    format!(
+        "<div {}>{blocks}</div>",
+        live("proposals", "proposals", version)
+    )
 }
 
 fn proposal_block(proposal: &SessionProposal) -> String {
@@ -276,14 +325,21 @@ fn labelled(label: &str, code: &str) -> String {
     if code.trim().is_empty() {
         String::new()
     } else {
-        format!("<div class=\"label\">{label}</div><pre>{}</pre>", code_html(code))
+        format!(
+            "<div class=\"label\">{label}</div><pre>{}</pre>",
+            code_html(code)
+        )
     }
 }
 
 // blocks
 
 fn block_view(version: u64, block: &Block) -> String {
-    let live = live(&format!("b-{}", block.id), &format!("b-{}", block.id), version);
+    let live = live(
+        &format!("b-{}", block.id),
+        &format!("b-{}", block.id),
+        version,
+    );
     if block.state.is_dropped() {
         return format!("<div {live} hidden></div>");
     }
@@ -295,7 +351,10 @@ fn block_view(version: u64, block: &Block) -> String {
         .map(|why| format!("<div class=\"why\">Why: {}</div>", esc(why)))
         .unwrap_or_default();
     let agent_view = if by_agent {
-        format!("<div class=\"agentview\">read_block → {}</div>", esc(&what_the_agent_reads(block)))
+        format!(
+            "<div class=\"agentview\">read_block → {}</div>",
+            esc(&what_the_agent_reads(block))
+        )
     } else {
         String::new()
     };
@@ -303,7 +362,11 @@ fn block_view(version: u64, block: &Block) -> String {
         "<div class=\"block {side}\" {live}><div class=\"bhead\"><span class=\"who\">{who}</span> → <b>{session}</b>\
 <span class=\"state {badge}\">{state}</span></div>{why}{body}{output}{hidden_input}{agent_view}</div>",
         side = if by_agent { "agent" } else { "me" },
-        who = if by_agent { esc(&block.author) } else { "me".to_string() },
+        who = if by_agent {
+            esc(&block.author)
+        } else {
+            "me".to_string()
+        },
         session = esc(&block.session),
         body = code_and_actions(block),
         output = output_view(block),
@@ -312,8 +375,16 @@ fn block_view(version: u64, block: &Block) -> String {
 }
 
 fn state_badge(block: &Block) -> (&'static str, String) {
-    let outcome = if block.state == BlockState::Failed { "failed" } else { "ran" };
-    let done = if block.state == BlockState::Failed { "s-bad" } else { "s-done" };
+    let outcome = if block.state == BlockState::Failed {
+        "failed"
+    } else {
+        "ran"
+    };
+    let done = if block.state == BlockState::Failed {
+        "s-bad"
+    } else {
+        "s-done"
+    };
     match block.state {
         BlockState::Pending => ("s-proposed", "proposed".to_string()),
         BlockState::Saved => ("s-draft", "from the notebook file".to_string()),
@@ -332,7 +403,10 @@ fn code_and_actions(block: &Block) -> String {
     if matches!(block.state, BlockState::Pending | BlockState::Saved) {
         let rows = block.code.lines().count().clamp(2, 20);
         let (run_class, note) = if block.proposed_by_agent() {
-            ("primary", "<input name=\"note\" placeholder=\"note for the agent (optional)\">")
+            (
+                "primary",
+                "<input name=\"note\" placeholder=\"note for the agent (optional)\">",
+            )
         } else {
             ("ok", "")
         };
@@ -348,7 +422,12 @@ fn code_and_actions(block: &Block) -> String {
     let edited = block
         .proposed_code
         .as_ref()
-        .map(|original| format!("<div class=\"label\">the agent proposed</div><pre>{}</pre>", code_html(original)))
+        .map(|original| {
+            format!(
+                "<div class=\"label\">the agent proposed</div><pre>{}</pre>",
+                code_html(original)
+            )
+        })
         .unwrap_or_default();
     let note = block
         .note
@@ -394,7 +473,9 @@ fn session_stopped_line(block: &Block) -> String {
 }
 
 fn output_view(block: &Block) -> String {
-    let Some(output) = &block.output else { return String::new() };
+    let Some(output) = &block.output else {
+        return String::new();
+    };
     let undecided = block.proposed_by_agent() && block.read == ReadDecision::Undecided;
     let running = block.state == BlockState::Running;
     let label = match (running, undecided) {
@@ -402,7 +483,11 @@ fn output_view(block: &Block) -> String {
         (false, true) => "output (only you see it so far)",
         (false, false) => "output",
     };
-    let failed = if block.state == BlockState::Failed { " failed" } else { "" };
+    let failed = if block.state == BlockState::Failed {
+        " failed"
+    } else {
+        ""
+    };
     let actions = if running {
         String::new()
     } else if undecided {
@@ -414,13 +499,18 @@ fn output_view(block: &Block) -> String {
     } else {
         String::new()
     };
-    format!("<div class=\"label\">{label}</div><pre class=\"out{failed}\">{}</pre>{actions}", esc(output))
+    format!(
+        "<div class=\"label\">{label}</div><pre class=\"out{failed}\">{}</pre>{actions}",
+        esc(output)
+    )
 }
 
 fn what_the_agent_reads(block: &Block) -> String {
     match (block.state, block.read, &block.output) {
         (BlockState::Pending | BlockState::Saved, _, _) => "waiting for you to run it".to_string(),
-        (BlockState::Queued | BlockState::Running, _, _) => format!("{:?}, no output yet", block.state).to_lowercase(),
+        (BlockState::Queued | BlockState::Running, _, _) => {
+            format!("{:?}, no output yet", block.state).to_lowercase()
+        }
         (_, ReadDecision::Released, Some(_)) => "the output above".to_string(),
         (_, ReadDecision::Hidden, Some(_)) => "\"the owner kept the output hidden\"".to_string(),
         (_, _, Some(_)) => "\"finished, waiting for the owner to release the output\"".to_string(),
@@ -439,7 +529,10 @@ fn composer(version: u64, core: &Core, notebook: &str, sessions: &[SessionDef]) 
         );
     }
     let chosen = session_i_last_ran_in(core, notebook)
-        .or_else(|| core.notebook(notebook).and_then(|n| n.sessions.first().cloned()))
+        .or_else(|| {
+            core.notebook(notebook)
+                .and_then(|n| n.sessions.first().cloned())
+        })
         .unwrap_or_else(|| sessions[0].name.clone());
     let options: String = sessions
         .iter()
@@ -470,10 +563,15 @@ fn code_html(code: &str) -> String {
     let mut html = String::new();
     let mut rest = code;
     while let Some(start) = rest.find("{{") {
-        let Some(length) = rest[start..].find("}}") else { break };
+        let Some(length) = rest[start..].find("}}") else {
+            break;
+        };
         let end = start + length + 2;
         html.push_str(&esc(&rest[..start]));
-        html.push_str(&format!("<span class=\"var\">{}</span>", esc(&rest[start..end])));
+        html.push_str(&format!(
+            "<span class=\"var\">{}</span>",
+            esc(&rest[start..end])
+        ));
         rest = &rest[end..];
     }
     html.push_str(&esc(rest));

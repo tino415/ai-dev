@@ -30,7 +30,12 @@ fn data_dir() -> PathBuf {
 }
 
 fn origin() -> String {
-    std::env::var("AI_DEV_ORIGIN").unwrap_or_else(|_| format!("http://localhost:{}", DEFAULT_LISTEN.rsplit(':').next().unwrap_or("7471")))
+    std::env::var("AI_DEV_ORIGIN").unwrap_or_else(|_| {
+        format!(
+            "http://localhost:{}",
+            DEFAULT_LISTEN.rsplit(':').next().unwrap_or("7471")
+        )
+    })
 }
 
 fn print_enroll_code() -> Result<(), String> {
@@ -62,7 +67,12 @@ async fn serve() -> Result<(), String> {
         .unwrap_or_default()
         .to_string();
     let listen = std::env::var("AI_DEV_LISTEN").unwrap_or_else(|_| DEFAULT_LISTEN.into());
-    let allowed_hosts = vec![origin_host, "localhost".into(), "127.0.0.1".into(), listen.clone()];
+    let allowed_hosts = vec![
+        origin_host,
+        "localhost".into(),
+        "127.0.0.1".into(),
+        listen.clone(),
+    ];
     let app = ai_dev::app_router(std::sync::Arc::clone(&core), auth, allowed_hosts);
 
     let reaper = std::sync::Arc::clone(&core);
@@ -73,7 +83,9 @@ async fn serve() -> Result<(), String> {
         }
     });
 
-    let listener = tokio::net::TcpListener::bind(&listen).await.map_err(|e| e.to_string())?;
+    let listener = tokio::net::TcpListener::bind(&listen)
+        .await
+        .map_err(|e| e.to_string())?;
     tracing::info!("ai-dev listening on {listen}, data in {}", dir.display());
     axum::serve(listener, app).await.map_err(|e| e.to_string())
 }

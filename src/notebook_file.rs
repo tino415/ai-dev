@@ -38,7 +38,9 @@ impl FileError {
         match self {
             FileError::BlockWithoutId => format!("{notebook}.md: a block has no id"),
             FileError::RepeatedId(id) => format!("{notebook}.md: block id {id} is used twice"),
-            FileError::UnsafeId(id) => format!("{notebook}.md: block id {id} uses more than a-z, A-Z, 0-9, - and _"),
+            FileError::UnsafeId(id) => {
+                format!("{notebook}.md: block id {id} uses more than a-z, A-Z, 0-9, - and _")
+            }
         }
     }
 }
@@ -50,7 +52,11 @@ pub fn parse(text: &str) -> Result<Vec<SavedBlock>, FileError> {
         if block.id.is_empty() {
             return Err(FileError::BlockWithoutId);
         }
-        if !block.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+        if !block
+            .id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        {
             return Err(FileError::UnsafeId(block.id.clone()));
         }
         if !seen.insert(block.id.as_str()) {
@@ -114,7 +120,14 @@ mod tests {
         let parsed = parse(&serialize("nb", &[block])).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].code, "echo '```'\nls");
-        assert_eq!((parsed[0].session.as_str(), parsed[0].author.as_str(), parsed[0].id.as_str()), ("prod", "claude-1", "abc"));
+        assert_eq!(
+            (
+                parsed[0].session.as_str(),
+                parsed[0].author.as_str(),
+                parsed[0].id.as_str()
+            ),
+            ("prod", "claude-1", "abc")
+        );
     }
 
     #[test]
@@ -137,24 +150,33 @@ mod tests {
     #[test]
     fn loads_a_file_written_before_blocks_had_a_why() {
         let parsed = parse("# nb\n\n```sh session=prod author=human id=abc\nls\n```\n").unwrap();
-        assert_eq!((parsed[0].code.as_str(), parsed[0].why.as_deref()), ("ls", None));
+        assert_eq!(
+            (parsed[0].code.as_str(), parsed[0].why.as_deref()),
+            ("ls", None)
+        );
     }
 
     #[test]
     fn a_block_without_an_id_is_an_error() {
-        let error = parse("# nb\n\n```sh session=prod author=human\nls\n```\n").err().unwrap();
+        let error = parse("# nb\n\n```sh session=prod author=human\nls\n```\n")
+            .err()
+            .unwrap();
         assert_eq!(error.message("nb"), "nb.md: a block has no id");
     }
 
     #[test]
     fn an_id_used_twice_is_an_error() {
         let text = "# nb\n\n```sh session=prod author=human id=abc\nls\n```\n\n```sh session=prod author=human id=abc\npwd\n```\n";
-        assert_eq!(parse(text).err().unwrap().message("nb"), "nb.md: block id abc is used twice");
+        assert_eq!(
+            parse(text).err().unwrap().message("nb"),
+            "nb.md: block id abc is used twice"
+        );
     }
 
     #[test]
     fn an_id_that_could_break_out_of_an_html_attribute_is_an_error() {
-        let text = "# nb\n\n```sh session=prod author=human id=x\"onmouseover=\"alert(1)\nls\n```\n";
+        let text =
+            "# nb\n\n```sh session=prod author=human id=x\"onmouseover=\"alert(1)\nls\n```\n";
         assert_eq!(
             parse(text).err().unwrap().message("nb"),
             "nb.md: block id x\"onmouseover=\"alert(1) uses more than a-z, A-Z, 0-9, - and _"

@@ -7,7 +7,7 @@ use http::HeaderMap;
 use serde::{Deserialize, Serialize};
 use webauthn_rs::prelude::*;
 
-use crate::core::{hash_token, Result};
+use crate::core::{Result, hash_token};
 use crate::model::secret_token;
 
 const ENROLL_VALIDITY_SECS: u64 = 600;
@@ -38,7 +38,10 @@ pub struct Auth {
 impl Auth {
     pub fn new(dir: &Path, origin: &str, agent_token_file: &Path) -> Result<Auth> {
         let origin_url = Url::parse(origin).map_err(|e| e.to_string())?;
-        let rp_id = origin_url.host_str().ok_or("origin has no host")?.to_string();
+        let rp_id = origin_url
+            .host_str()
+            .ok_or("origin has no host")?
+            .to_string();
         let webauthn = WebauthnBuilder::new(&rp_id, &origin_url)
             .map_err(|e| e.to_string())?
             .rp_name("ai-dev")
@@ -104,7 +107,10 @@ impl Auth {
 
     pub fn open_session(&self) -> String {
         let session = secret_token();
-        self.sessions.lock().expect("sessions").insert(session.clone());
+        self.sessions
+            .lock()
+            .expect("sessions")
+            .insert(session.clone());
         let secure = if self.secure_cookie { "; Secure" } else { "" };
         format!("{COOKIE}={session}; HttpOnly; SameSite=Strict; Path=/{secure}")
     }
@@ -126,7 +132,10 @@ impl Auth {
         if !self.is_logged_in(headers) && !self.consume_enroll_code(code) {
             return Err("enrollment code is missing, wrong or expired".into());
         }
-        let exclude = existing.iter().map(|p| p.cred_id().clone()).collect::<Vec<_>>();
+        let exclude = existing
+            .iter()
+            .map(|p| p.cred_id().clone())
+            .collect::<Vec<_>>();
         let (options, state) = self
             .webauthn
             .start_passkey_registration(PASSKEY_USER, "owner", "owner", Some(exclude))
@@ -134,8 +143,17 @@ impl Auth {
         Ok((self.remember(Challenge::Register(state)), options))
     }
 
-    pub fn finish_register(&self, challenge_id: &str, credential: &RegisterPublicKeyCredential) -> Result<(Passkey, String)> {
-        let Some(Challenge::Register(state)) = self.challenges.lock().expect("challenges").remove(challenge_id) else {
+    pub fn finish_register(
+        &self,
+        challenge_id: &str,
+        credential: &RegisterPublicKeyCredential,
+    ) -> Result<(Passkey, String)> {
+        let Some(Challenge::Register(state)) = self
+            .challenges
+            .lock()
+            .expect("challenges")
+            .remove(challenge_id)
+        else {
             return Err("unknown registration".into());
         };
         let passkey = self
@@ -153,8 +171,17 @@ impl Auth {
         Ok((self.remember(Challenge::Login(state)), options))
     }
 
-    pub fn finish_login(&self, challenge_id: &str, credential: &PublicKeyCredential) -> Result<(AuthenticationResult, String)> {
-        let Some(Challenge::Login(state)) = self.challenges.lock().expect("challenges").remove(challenge_id) else {
+    pub fn finish_login(
+        &self,
+        challenge_id: &str,
+        credential: &PublicKeyCredential,
+    ) -> Result<(AuthenticationResult, String)> {
+        let Some(Challenge::Login(state)) = self
+            .challenges
+            .lock()
+            .expect("challenges")
+            .remove(challenge_id)
+        else {
             return Err("unknown login".into());
         };
         let result = self
@@ -190,7 +217,11 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
         .iter()
         .filter_map(|value| value.to_str().ok())
         .flat_map(|value| value.split(';'))
-        .find_map(|pair| pair.trim().strip_prefix(&format!("{name}=")).map(str::to_string))
+        .find_map(|pair| {
+            pair.trim()
+                .strip_prefix(&format!("{name}="))
+                .map(str::to_string)
+        })
 }
 
 fn now_secs() -> u64 {

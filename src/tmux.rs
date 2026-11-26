@@ -20,7 +20,10 @@ pub struct TerminalSize {
     pub rows: u16,
 }
 
-pub const DETACHED_SIZE: TerminalSize = TerminalSize { cols: 220, rows: 50 };
+pub const DETACHED_SIZE: TerminalSize = TerminalSize {
+    cols: 220,
+    rows: 50,
+};
 
 pub struct AttachedClient(tokio::process::Child);
 
@@ -49,20 +52,43 @@ impl Tmux {
     pub async fn start(&self, session: &str) -> Result<(), String> {
         let shell = login_shell()?;
         self.create_private_log(session)?;
-        let _ = self.run(&["kill-session", "-t", &exact_session(session)]).await;
-        let (cols, rows) = (DETACHED_SIZE.cols.to_string(), DETACHED_SIZE.rows.to_string());
+        let _ = self
+            .run(&["kill-session", "-t", &exact_session(session)])
+            .await;
+        let (cols, rows) = (
+            DETACHED_SIZE.cols.to_string(),
+            DETACHED_SIZE.rows.to_string(),
+        );
         self.run(&[
-            "start-server", ";",
-            "set-option", "-wg", "remain-on-exit", "on", ";",
-            "new-session", "-d", "-s", session, "-x", &cols, "-y", &rows, &shell, "-l",
+            "start-server",
+            ";",
+            "set-option",
+            "-wg",
+            "remain-on-exit",
+            "on",
+            ";",
+            "new-session",
+            "-d",
+            "-s",
+            session,
+            "-x",
+            &cols,
+            "-y",
+            &rows,
+            &shell,
+            "-l",
         ])
         .await?;
         let pipe = format!("cat >> '{}'", self.log_path(session).display());
-        self.run(&["pipe-pane", "-t", &exact_pane(session), &pipe]).await.map(|_| ())
+        self.run(&["pipe-pane", "-t", &exact_pane(session), &pipe])
+            .await
+            .map(|_| ())
     }
 
     pub async fn stop(&self, session: &str) {
-        let _ = self.run(&["kill-session", "-t", &exact_session(session)]).await;
+        let _ = self
+            .run(&["kill-session", "-t", &exact_session(session)])
+            .await;
         let _ = std::fs::remove_file(self.log_path(session));
     }
 
@@ -74,16 +100,25 @@ impl Tmux {
         if self.pane_dead(session).await != Some(true) {
             return None;
         }
-        let screen = self.run(&["capture-pane", "-p", "-J", "-t", &exact_pane(session)]).await.ok()?;
+        let screen = self
+            .run(&["capture-pane", "-p", "-J", "-t", &exact_pane(session)])
+            .await
+            .ok()?;
         let lines: Vec<&str> = screen.trim_end().lines().collect();
         Some(lines[lines.len().saturating_sub(LAST_LINES_OF_A_DEAD_PANE)..].join("\n"))
     }
 
     async fn pane_dead(&self, session: &str) -> Option<bool> {
-        self.run(&["list-panes", "-t", &exact_pane(session), "-F", "#{pane_dead}"])
-            .await
-            .ok()
-            .map(|flags| flags.lines().next() == Some("1"))
+        self.run(&[
+            "list-panes",
+            "-t",
+            &exact_pane(session),
+            "-F",
+            "#{pane_dead}",
+        ])
+        .await
+        .ok()
+        .map(|flags| flags.lines().next() == Some("1"))
     }
 
     pub async fn type_lines(&self, session: &str, text: &str) -> Result<(), String> {
@@ -92,21 +127,35 @@ impl Tmux {
             .split('\n')
             .map(|line| format!("{line}\n"))
             .collect();
-        self.paste_through_stdin(session, &each_line_and_its_enter).await
+        self.paste_through_stdin(session, &each_line_and_its_enter)
+            .await
     }
 
     pub async fn send_hidden_line(&self, session: &str, line: &str) -> Result<(), String> {
-        self.paste_through_stdin(session, &format!("{line}\n")).await
+        self.paste_through_stdin(session, &format!("{line}\n"))
+            .await
     }
 
     pub async fn interrupt(&self, session: &str) -> Result<(), String> {
-        self.run(&["send-keys", "-t", &exact_pane(session), "C-c"]).await.map(|_| ())
+        self.run(&["send-keys", "-t", &exact_pane(session), "C-c"])
+            .await
+            .map(|_| ())
     }
 
     async fn paste_through_stdin(&self, session: &str, text: &str) -> Result<(), String> {
         let buffer = format!("aidev-{}", short_id());
-        self.run_with_stdin(&["load-buffer", "-b", &buffer, "-"], text).await?;
-        let pasted = self.run(&["paste-buffer", "-d", "-b", &buffer, "-t", &exact_pane(session)]).await;
+        self.run_with_stdin(&["load-buffer", "-b", &buffer, "-"], text)
+            .await?;
+        let pasted = self
+            .run(&[
+                "paste-buffer",
+                "-d",
+                "-b",
+                &buffer,
+                "-t",
+                &exact_pane(session),
+            ])
+            .await;
         if pasted.is_err() {
             let _ = self.run(&["delete-buffer", "-b", &buffer]).await;
         }
@@ -151,17 +200,40 @@ impl Tmux {
     }
 
     async fn client_pids(&self, session: &str) -> Vec<u32> {
-        self.run(&["list-clients", "-t", &exact_session(session), "-F", "#{client_pid}"])
-            .await
-            .map(|pids| pids.lines().filter_map(|pid| pid.trim().parse().ok()).collect())
-            .unwrap_or_default()
+        self.run(&[
+            "list-clients",
+            "-t",
+            &exact_session(session),
+            "-F",
+            "#{client_pid}",
+        ])
+        .await
+        .map(|pids| {
+            pids.lines()
+                .filter_map(|pid| pid.trim().parse().ok())
+                .collect()
+        })
+        .unwrap_or_default()
     }
 
-    pub fn attach_client(&self, session: &str, size: TerminalSize) -> Result<(pty_process::Pty, AttachedClient), String> {
+    pub fn attach_client(
+        &self,
+        session: &str,
+        size: TerminalSize,
+    ) -> Result<(pty_process::Pty, AttachedClient), String> {
         let (pty, pts) = pty_process::open().map_err(|e| format!("pty: {e}"))?;
-        pty.resize(pty_size(size)).map_err(|e| format!("pty: {e}"))?;
+        pty.resize(pty_size(size))
+            .map_err(|e| format!("pty: {e}"))?;
         let process = pty_process::Command::new("tmux")
-            .args(["-L", &self.socket, "-f", "/dev/null", "attach-session", "-t", &exact_session(session)])
+            .args([
+                "-L",
+                &self.socket,
+                "-f",
+                "/dev/null",
+                "attach-session",
+                "-t",
+                &exact_session(session),
+            ])
             .env("TERM", "xterm-256color")
             .kill_on_drop(true)
             .spawn(pts)
@@ -180,7 +252,9 @@ impl Tmux {
 
     async fn wait_until_the_server_drops(&self, session: &str, pid: u32) {
         let deadline = tokio::time::Instant::now() + CLIENT_GONE_WAIT;
-        while self.client_pids(session).await.contains(&pid) && tokio::time::Instant::now() < deadline {
+        while self.client_pids(session).await.contains(&pid)
+            && tokio::time::Instant::now() < deadline
+        {
             tokio::time::sleep(CLIENT_GONE_POLL).await;
         }
     }
@@ -190,24 +264,49 @@ impl Tmux {
             return;
         }
         let window = exact_pane(session);
-        let (cols, rows) = (DETACHED_SIZE.cols.to_string(), DETACHED_SIZE.rows.to_string());
+        let (cols, rows) = (
+            DETACHED_SIZE.cols.to_string(),
+            DETACHED_SIZE.rows.to_string(),
+        );
         let _ = self
             .run(&[
-                "resize-window", "-t", &window, "-x", &cols, "-y", &rows, ";",
-                "set-option", "-wu", "-t", &window, "window-size",
+                "resize-window",
+                "-t",
+                &window,
+                "-x",
+                &cols,
+                "-y",
+                &rows,
+                ";",
+                "set-option",
+                "-wu",
+                "-t",
+                &window,
+                "window-size",
             ])
             .await;
     }
 
     async fn run(&self, args: &[&str]) -> Result<String, String> {
-        let child = self.command(args).stdin(Stdio::null()).spawn().map_err(|e| format!("tmux: {e}"))?;
+        let child = self
+            .command(args)
+            .stdin(Stdio::null())
+            .spawn()
+            .map_err(|e| format!("tmux: {e}"))?;
         finished(args, child.wait_with_output().await)
     }
 
     async fn run_with_stdin(&self, args: &[&str], input: &str) -> Result<String, String> {
-        let mut child = self.command(args).stdin(Stdio::piped()).spawn().map_err(|e| format!("tmux: {e}"))?;
+        let mut child = self
+            .command(args)
+            .stdin(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("tmux: {e}"))?;
         let mut stdin = child.stdin.take().expect("stdin was piped");
-        stdin.write_all(input.as_bytes()).await.map_err(|e| format!("tmux: {e}"))?;
+        stdin
+            .write_all(input.as_bytes())
+            .await
+            .map_err(|e| format!("tmux: {e}"))?;
         drop(stdin);
         finished(args, child.wait_with_output().await)
     }
@@ -241,12 +340,26 @@ fn login_shell() -> Result<String, String> {
     let mut entry: libc::passwd = unsafe { std::mem::zeroed() };
     let mut found: *mut libc::passwd = std::ptr::null_mut();
     let mut buffer = vec![0 as libc::c_char; 16 * 1024];
-    let status = unsafe { libc::getpwuid_r(uid, &mut entry, buffer.as_mut_ptr(), buffer.len(), &mut found) };
+    let status = unsafe {
+        libc::getpwuid_r(
+            uid,
+            &mut entry,
+            buffer.as_mut_ptr(),
+            buffer.len(),
+            &mut found,
+        )
+    };
     if status != 0 || found.is_null() || entry.pw_shell.is_null() {
         return Err(format!("no passwd entry for uid {uid}"));
     }
-    let shell = unsafe { CStr::from_ptr(entry.pw_shell) }.to_string_lossy().into_owned();
-    Ok(if shell.is_empty() { "/bin/sh".into() } else { shell })
+    let shell = unsafe { CStr::from_ptr(entry.pw_shell) }
+        .to_string_lossy()
+        .into_owned();
+    Ok(if shell.is_empty() {
+        "/bin/sh".into()
+    } else {
+        shell
+    })
 }
 
 pub fn pty_size(size: TerminalSize) -> pty_process::Size {

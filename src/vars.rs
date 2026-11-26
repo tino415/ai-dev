@@ -39,9 +39,9 @@ pub fn mask(text: &str, set: &VariableSet) -> String {
         .map(|variable| variable.value.as_str())
         .collect();
     values.sort_by_key(|value| std::cmp::Reverse(value.len()));
-    values
-        .into_iter()
-        .fold(text.to_string(), |masked, value| masked.replace(value, "***"))
+    values.into_iter().fold(text.to_string(), |masked, value| {
+        masked.replace(value, "***")
+    })
 }
 
 #[cfg(test)]
@@ -73,7 +73,10 @@ mod tests {
     #[test]
     fn renders_variables_and_reports_missing_ones() {
         let vars = set(&[("ns", "prod", false)]);
-        assert_eq!(render("kubectl -n {{ ns }} get pods", &vars).unwrap(), "kubectl -n prod get pods");
+        assert_eq!(
+            render("kubectl -n {{ ns }} get pods", &vars).unwrap(),
+            "kubectl -n prod get pods"
+        );
         assert!(render("{{nope}}", &vars).unwrap_err().contains("nope"));
     }
 
@@ -86,8 +89,10 @@ mod tests {
     #[test]
     fn notebook_overrides_win_over_profile() {
         let mut vars = Variables::default();
-        vars.profiles.insert("prod".into(), set(&[("ns", "prod", false)]));
-        vars.notebooks.insert("nb".into(), set(&[("ns", "debug", false)]));
+        vars.profiles
+            .insert("prod".into(), set(&[("ns", "prod", false)]));
+        vars.notebooks
+            .insert("nb".into(), set(&[("ns", "debug", false)]));
         assert_eq!(effective(&vars, Some("prod"), "nb")["ns"].value, "debug");
         assert_eq!(effective(&vars, Some("prod"), "other")["ns"].value, "prod");
     }

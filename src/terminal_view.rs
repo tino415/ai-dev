@@ -1,4 +1,4 @@
-use crate::html::{document, esc, Keyboard};
+use crate::html::{Keyboard, document, esc};
 use crate::model::SessionDef;
 
 pub const XTERM: &str = include_str!("static/xterm-6.0.0.js");
@@ -49,7 +49,12 @@ pub fn page(def: &SessionDef, running: bool) -> String {
     let hidden_while_running = if running { " hidden" } else { "" };
     let keys: String = KEYS
         .iter()
-        .map(|(key, label)| format!("<button type=\"button\" data-key=\"{}\">{label}</button>", esc(key)))
+        .map(|(key, label)| {
+            format!(
+                "<button type=\"button\" data-key=\"{}\">{label}</button>",
+                esc(key)
+            )
+        })
         .collect();
     document(
         &def.name,
