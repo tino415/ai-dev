@@ -21,6 +21,10 @@ const LIVENESS_CHECK: Duration = Duration::from_secs(1);
 const CHANGES_BUFFERED: usize = 256;
 const HIDDEN_INPUT_SENT: &str = "‹hidden input sent›";
 const HIDDEN_INPUT_PLACEHOLDER: char = '\u{E000}';
+const SCREEN_NOT_KEPT: &str = "‹full-screen program, screen not kept›";
+const SCREEN_NOW: &str = "‹full-screen program, its screen now›";
+const ALTERNATE_SCREEN_ON: &str = "\x1b[?1049h";
+const ALTERNATE_SCREEN_OFF: &str = "\x1b[?1049l";
 const PROMPT_SETTLE: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -998,33 +1002,52 @@ impl Core {
         raw: &str,
         clean: impl FnOnce(&str) -> String,
     ) -> String {
-        let hidden: Vec<(usize, String)> = id
-            .and_then(|id| {
-                self.state()
-                    .running
-                    .get(id)
-                    .map(|running| running.hidden_inputs.clone())
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .map(|input| (input.sent_at, input.value))
-            .collect();
+        let hidden = self.hidden_inputs(id);
         let mut marked = raw.to_string();
-        for (sent_at, _) in hidden.iter().rev() {
-            if marked.is_char_boundary(*sent_at) {
-                marked.insert(*sent_at, HIDDEN_INPUT_PLACEHOLDER);
+        for input in hidden.iter().rev() {
+            if marked.is_char_boundary(input.sent_at) {
+                marked.insert(input.sent_at, HIDDEN_INPUT_PLACEHOLDER);
             }
         }
-        let mut values: Vec<&str> = hidden
-            .iter()
-            .map(|(_, value)| value.as_str())
-            .filter(|v| !v.is_empty())
-            .collect();
-        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
-        values
-            .into_iter()
-            .fold(clean(&marked), |masked, value| masked.replace(value, "***"))
+        with_hidden_values_masked(&clean(&marked), &hidden)
             .replace(HIDDEN_INPUT_PLACEHOLDER, HIDDEN_INPUT_SENT)
+    }
+
+    fn hidden_inputs(&self, id: Option<&str>) -> Vec<HiddenInput> {
+        id.and_then(|id| {
+            self.state()
+                .running
+                .get(id)
+                .map(|running| running.hidden_inputs.clone())
+        })
+        .unwrap_or_default()
+    }
+
+    async fn with_the_screen_of_a_full_screen_program(
+        &self,
+        id: &str,
+        session: &str,
+        output_so_far: String,
+    ) -> String {
+        let Some(at) = output_so_far.rfind(SCREEN_NOT_KEPT) else {
+            return output_so_far;
+        };
+        let (before, notice_line) = output_so_far.split_at(at);
+        if notice_line.contains('\n') || !self.tmux.is_on_the_alternate_screen(session).await {
+            return output_so_far;
+        }
+        let Some(screen) = self.tmux.screen(session).await else {
+            return output_so_far;
+        };
+        let screen = with_hidden_values_masked(
+            &screen_text_without_drawing(&screen),
+            &self.hidden_inputs(Some(id)),
+        );
+        let notice_line = notice_line.replacen(SCREEN_NOT_KEPT, SCREEN_NOW, 1);
+        match screen.is_empty() {
+            true => format!("{before}{notice_line}"),
+            false => format!("{before}{notice_line}\n{screen}"),
+        }
     }
 
     fn finish_block(&self, ran: &Block, result: Result<String>, set: &VariableSet) {
@@ -1149,9 +1172,14 @@ impl Core {
                     output_so_far()
                 ));
             }
-            let so_far = vars::mask(&output_so_far(), set);
-            if let (Some(id), false) = (block_id, so_far.trim().is_empty()) {
-                self.publish_output_so_far(id, so_far);
+            if let Some(id) = block_id {
+                let so_far = self
+                    .with_the_screen_of_a_full_screen_program(id, &def.name, output_so_far())
+                    .await;
+                let so_far = vars::mask(&so_far, set);
+                if !so_far.trim().is_empty() {
+                    self.publish_output_so_far(id, so_far);
+                }
             }
             tokio::time::sleep(OUTPUT_POLL).await;
         }
@@ -1424,7 +1452,7 @@ enum Ended {
 }
 
 fn clean_output(raw: &str, marker: &Marker, typed: &str, typing: Typing, ended: Ended) -> String {
-    let text = strip_terminal_escapes(raw);
+    let text = strip_terminal_escapes(&without_full_screen_drawings(raw));
     let all_lines: Vec<&str> = text.lines().collect();
     let lines = match typing {
         Typing::AsOneCommand => after_the_echo_of_one_command(&all_lines, typed),
@@ -1445,6 +1473,58 @@ fn clean_output(raw: &str, marker: &Marker, typed: &str, typing: Typing, ended: 
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn without_full_screen_drawings(raw: &str) -> String {
+    let mut kept = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(start) = rest.find(ALTERNATE_SCREEN_ON) {
+        kept.push_str(&rest[..start]);
+        let drawn = &rest[start + ALTERNATE_SCREEN_ON.len()..];
+        let (drawing, after) = match drawn.find(ALTERNATE_SCREEN_OFF) {
+            Some(end) => (&drawn[..end], &drawn[end + ALTERNATE_SCREEN_OFF.len()..]),
+            None => (drawn, ""),
+        };
+        let last_line = kept.rsplit('\n').next().unwrap_or_default();
+        if !strip_terminal_escapes(last_line).is_empty() {
+            kept.push('\n');
+        }
+        kept.push_str(SCREEN_NOT_KEPT);
+        for _ in drawing.matches(HIDDEN_INPUT_PLACEHOLDER) {
+            kept.push(' ');
+            kept.push(HIDDEN_INPUT_PLACEHOLDER);
+        }
+        kept.push('\n');
+        rest = after;
+    }
+    kept.push_str(rest);
+    kept
+}
+
+fn screen_text_without_drawing(screen: &str) -> String {
+    screen
+        .lines()
+        .map(|line| {
+            line.chars()
+                .filter(|c| !('\u{2500}'..='\u{257F}').contains(c))
+                .collect::<String>()
+        })
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn with_hidden_values_masked(text: &str, hidden: &[HiddenInput]) -> String {
+    let mut values: Vec<&str> = hidden
+        .iter()
+        .map(|input| input.value.as_str())
+        .filter(|value| !value.is_empty())
+        .collect();
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values.into_iter().fold(text.to_string(), |masked, value| {
+        masked.replace(value, "***")
+    })
 }
 
 fn after_the_echo_of_one_command<'a, 'b>(lines: &'a [&'b str], typed: &str) -> &'a [&'b str] {
@@ -1664,5 +1744,19 @@ mod tests {
         let output = clean_output(&raw, &marker, &typed, Typing::LineByLine, Ended::Early);
 
         assert_eq!(output.trim_end(), "uname -s; exit\nLinux\nexit");
+    }
+
+    #[test]
+    fn what_a_full_screen_program_drew_becomes_one_notice() {
+        let marker = Marker::new();
+        let typed = marker.command(Preset::Bash.marker_template());
+        let raw = "before\r\n\x1b[?1049h\x1b[5;10H┌──┐\x1b[6;10H│ PIN │\x1b[?1049lafter\r\n";
+
+        let output = clean_output(raw, &marker, &typed, Typing::LineByLine, Ended::AtTheMarker);
+
+        assert_eq!(
+            output,
+            "before\n‹full-screen program, screen not kept›\nafter"
+        );
     }
 }

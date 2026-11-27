@@ -1045,6 +1045,74 @@ async fn a_running_block_takes_hidden_input_from_the_page_and_can_be_interrupted
 }
 
 #[tokio::test]
+async fn a_long_unbroken_output_line_does_not_widen_the_page() {
+    let _one = ONE_BROWSER_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    let agent = Agent::of(&server);
+    create_bash_session(&ui, &server, "sh").await;
+    open_live_notebook(&ui, &server, "nb").await;
+    let token = agent.join(&ui, "nb", "agent-a").await;
+    let id = agent
+        .propose(&token, "printf '%0300d\\n' 0", "prints one long line")
+        .await;
+    let block = format!("#b-{id}");
+
+    ui.click(&format!("{block} button.primary")).await;
+    ui.wait_until(
+        "the long line shows",
+        &format!("document.querySelector('{block} pre.out')?.innerText.includes('0'.repeat(300))"),
+    )
+    .await;
+
+    for (width, height, mobile) in [(1280, 900, false), (390, 844, true)] {
+        ui.page
+            .execute(SetDeviceMetricsOverrideParams::new(
+                width, height, 2.0, mobile,
+            ))
+            .await
+            .unwrap();
+        let widths: Value = ui
+            .eval("({ page: document.documentElement.scrollWidth, window: window.innerWidth })")
+            .await;
+        assert!(
+            widths["page"].as_u64().unwrap() <= widths["window"].as_u64().unwrap(),
+            "at {width} px the page scrolls sideways: {widths}"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "rewrites screenshots/; run with --ignored after a screen changes"]
+async fn screenshots_of_a_block_waiting_at_a_full_screen_prompt() {
+    let _one = ONE_BROWSER_AT_A_TIME
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (server, ui) = signed_in().await;
+    let agent = Agent::of(&server);
+    create_bash_session(&ui, &server, "sh").await;
+    open_live_notebook(&ui, &server, "nb").await;
+    let token = agent.join(&ui, "nb", "agent-a").await;
+    let id = agent
+        .propose(
+            &token,
+            r#"echo initializing; printf '\033[?1049h\033[5;10H┌───────────────────────────────┐\033[6;10H│ Please enter the passphrase   │\033[7;10H│ Passphrase: ________________  │\033[8;10H│      <OK>         <Cancel>    │\033[9;10H└───────────────────────────────┘'; read -rs answer; printf '\033[?1049l'"#,
+            "decrypts the state",
+        )
+        .await;
+    let block = format!("#b-{id}");
+
+    ui.click(&format!("{block} button.primary")).await;
+    ui.wait_until(
+        "the block shows the prompt's screen",
+        &format!("document.querySelector('{block} pre.out')?.innerText.includes('Passphrase: ')"),
+    )
+    .await;
+    ui.screenshot(&server, "notebook-full-screen-prompt").await;
+}
+
+#[tokio::test]
 #[ignore = "rewrites screenshots/; run with --ignored after a screen changes"]
 async fn screenshots_of_an_agent_block_run_and_let_read() {
     let _one = ONE_BROWSER_AT_A_TIME

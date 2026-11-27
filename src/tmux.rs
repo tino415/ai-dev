@@ -108,6 +108,24 @@ impl Tmux {
         Some(lines[lines.len().saturating_sub(LAST_LINES_OF_A_DEAD_PANE)..].join("\n"))
     }
 
+    pub async fn is_on_the_alternate_screen(&self, session: &str) -> bool {
+        self.run(&[
+            "display-message",
+            "-p",
+            "-t",
+            &exact_pane(session),
+            "#{alternate_on}",
+        ])
+        .await
+        .is_ok_and(|flag| flag.trim() == "1")
+    }
+
+    pub async fn screen(&self, session: &str) -> Option<String> {
+        self.run(&["capture-pane", "-p", "-t", &exact_pane(session)])
+            .await
+            .ok()
+    }
+
     async fn pane_dead(&self, session: &str) -> Option<bool> {
         self.run(&[
             "list-panes",

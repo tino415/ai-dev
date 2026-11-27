@@ -91,6 +91,10 @@ endpoint has no such tool. `sudo`'s own credential cache is left alone, so later
 its timeout run `sudo` without asking. A prompt not answered within the session's block seconds fails the block, and
 `Run again` retries it.
 
+What a full-screen program draws, such as a gpg passphrase dialog or a pager, is not kept in a block's output:
+one line, `‹full-screen program, screen not kept›`, stands where it was. While the program is up, the output so
+far shows its screen's text under `‹full-screen program, its screen now›`, to you only.
+
 Block text and hidden input reach tmux through stdin (`load-buffer`, `paste-buffer -d`), never as arguments, so
 `ps` shows neither. A bash session gets a block as one command, so the shell has read every line before the first
 one runs and a prompt gets the hidden input alone. The output starts after the echo of that command. Lines after

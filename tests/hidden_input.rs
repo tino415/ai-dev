@@ -305,6 +305,34 @@ async fn the_output_of_a_bash_block_holds_no_echo() {
 }
 
 #[tokio::test]
+async fn a_full_screen_prompt_shows_its_text_while_it_waits_and_one_notice_after() {
+    let h = harness_with_bash_session().await;
+    let block = run_block(
+        &h.core,
+        r#"printf '\033[?1049h\033[5;10H┌──────────────┐\033[6;10H│ Passphrase:  │'; read -rs answer; printf '\033[?1049l'; echo "got ${#answer} characters""#,
+    )
+    .await;
+    wait_for_output_containing(&h.core, &block.id, "Passphrase:").await;
+
+    let waiting = h.core.block(&block.id).unwrap().output.unwrap();
+    assert_eq!(
+        waiting,
+        "‹full-screen program, its screen now›\nPassphrase:"
+    );
+
+    h.core
+        .send_hidden_input(&block.id, "hunter2hunter2")
+        .await
+        .unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert_eq!(
+        done.output.unwrap(),
+        "‹full-screen program, screen not kept› ‹hidden input sent›\ngot 14 characters"
+    );
+}
+
+#[tokio::test]
 async fn read_is_refused_on_a_running_block() {
     let h = harness_with_bash_session().await;
     let block = run_block(&h.core, "echo started; sleep 3").await;
