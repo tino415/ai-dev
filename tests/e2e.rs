@@ -1058,7 +1058,7 @@ async fn screenshots_of_an_agent_block_run_and_let_read() {
     let id = agent
         .propose(
             &token,
-            "sleep 3; echo disk-$((40 + 2))-percent-full",
+            "echo checking-the-disk; sleep 3; echo disk-$((40 + 2))-percent-full",
             "to see how full the disk is",
         )
         .await;
@@ -1074,9 +1074,9 @@ async fn screenshots_of_an_agent_block_run_and_let_read() {
 
     ui.click(&format!("{block} {RUN_AND_LET_READ}")).await;
     ui.wait_until(
-        "the running block shows the typed command and says the agent reads when done",
+        "the running block shows its output so far and says the agent reads when done",
         &format!("document.querySelector('{block} .state')?.innerText === 'running · agent reads when done' \
-                  && document.querySelector('{block} pre.out')?.innerText.includes('percent-full')"),
+                  && document.querySelector('{block} pre.out')?.innerText.includes('checking-the-disk')"),
     )
     .await;
     ui.screenshot(&server, "notebook-agent-reads-when-done")

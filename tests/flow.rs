@@ -84,7 +84,7 @@ async fn a_line_ending_in_a_semicolon_reaches_the_session_as_written() {
     h.core.approve_run(&block.id, None, None).unwrap();
     let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
 
-    assert!(done.output.unwrap().contains("\nsemi ;"));
+    assert_eq!(done.output.unwrap().trim(), "semi ;");
 }
 
 #[tokio::test]
@@ -981,7 +981,7 @@ async fn a_block_in_a_session_with_no_limit_runs_past_one_second() {
     h.core.approve_run(&block.id, None, None).unwrap();
     let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
 
-    assert!(done.output.unwrap().trim_end().ends_with("\nlate"));
+    assert_eq!(done.output.unwrap().trim(), "late");
 }
 
 #[tokio::test]
@@ -1022,7 +1022,7 @@ async fn a_block_in_a_session_with_no_limit_runs_sleep_130_to_its_end() {
 
     let done = h.core.block(&block.id).unwrap();
     assert_eq!(done.state, BlockState::Finished, "{:?}", done.output);
-    assert!(done.output.unwrap().trim_end().ends_with("\nslept"));
+    assert_eq!(done.output.unwrap().trim(), "slept");
 }
 
 #[tokio::test]

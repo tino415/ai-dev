@@ -92,8 +92,12 @@ its timeout run `sudo` without asking. A prompt not answered within the session'
 `Run again` retries it.
 
 Block text and hidden input reach tmux through stdin (`load-buffer`, `paste-buffer -d`), never as arguments, so
-`ps` shows neither. After hidden input or an interrupt the block's end marker is typed again, because a prompt
-that reads the terminal discards what was typed ahead.
+`ps` shows neither. A bash session gets a block as one command, so the shell has read every line before the first
+one runs and a prompt gets the hidden input alone. The output starts after the echo of that command. Lines after
+one that opens another program's prompt, such as `ssh host`, run when that program ends, and the block runs
+until then. Setup commands and iex,
+psql and mysql sessions are typed line by line; there the end marker is typed again after hidden input. After an
+interrupt it is typed again in every session.
 
 A notebook reopened after a restart shows its blocks as `saved`: they hold code only and need a click to run again.
 

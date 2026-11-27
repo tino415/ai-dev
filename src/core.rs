@@ -71,7 +71,14 @@ struct RunningBlock {
     session: String,
     log_offset: usize,
     end_marker_command: String,
+    typing: Typing,
     hidden_inputs: Vec<HiddenInput>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Typing {
+    AsOneCommand,
+    LineByLine,
 }
 
 #[derive(Clone)]
@@ -112,6 +119,18 @@ impl Marker {
             .replace("{head}", &self.head)
             .replace("{tail}", &self.tail)
     }
+
+    fn block_as_one_command(&self, code: &str, typed: &str) -> String {
+        let delimiter = format!("{}BLOCK_{}", self.head, self.tail);
+        format!(
+            "eval \"$(cat <<'{delimiter}'\n{code}\n{delimiter}\n{}",
+            last_line_of_one_command(typed)
+        )
+    }
+}
+
+fn last_line_of_one_command(typed: &str) -> String {
+    format!(")\"; {typed}")
 }
 
 pub fn valid_name(name: &str) -> bool {
@@ -371,7 +390,7 @@ impl Core {
             self.tmux.type_lines(&def.name, &command).await?;
         }
         for setup in &def.setup_commands {
-            self.run_text(None, def, set, setup)
+            self.run_text(None, def, Typing::LineByLine, set, setup)
                 .await
                 .map_err(|error| format!("setup failed: {error}"))?;
         }
@@ -867,7 +886,13 @@ impl Core {
         let lock = self.session_lock(&def.name);
         let _guard = lock.lock().await;
         self.set_block_state(id, BlockState::Running);
-        let result = self.run_text(Some(id), &def, &set, &block.code).await;
+        let typing = match def.reads_a_block_as_one_command() {
+            true => Typing::AsOneCommand,
+            false => Typing::LineByLine,
+        };
+        let result = self
+            .run_text(Some(id), &def, typing, &set, &block.code)
+            .await;
         self.state().running.remove(id);
         self.finish_block(&block, result, &set);
     }
@@ -881,9 +906,15 @@ impl Core {
             self.forget_last_hidden_input(id);
             return Err(error);
         }
-        self.retype_end_marker(id, &session).await;
+        if self.running_typing(id) == Some(Typing::LineByLine) {
+            self.retype_end_marker(id, &session).await;
+        }
         self.notify_running_block(id);
         Ok(())
+    }
+
+    fn running_typing(&self, id: &str) -> Option<Typing> {
+        self.state().running.get(id).map(|running| running.typing)
     }
 
     pub async fn interrupt_block(&self, id: &str) -> Result<()> {
@@ -1050,6 +1081,7 @@ impl Core {
         &self,
         block_id: Option<&str>,
         def: &SessionDef,
+        typing: Typing,
         set: &VariableSet,
         code: &str,
     ) -> Result<String> {
@@ -1067,12 +1099,21 @@ impl Core {
                     session: def.name.clone(),
                     log_offset: offset,
                     end_marker_command: typed.clone(),
+                    typing,
                     hidden_inputs: Vec::new(),
                 },
             );
         }
-        self.tmux.type_lines(&def.name, &rendered).await?;
-        self.tmux.type_lines(&def.name, &typed).await?;
+        match typing {
+            Typing::AsOneCommand => {
+                let command = marker.block_as_one_command(&rendered, &typed);
+                self.tmux.type_lines(&def.name, &command).await?;
+            }
+            Typing::LineByLine => {
+                self.tmux.type_lines(&def.name, &rendered).await?;
+                self.tmux.type_lines(&def.name, &typed).await?;
+            }
+        }
         self.touch(&def.name);
         let deadline = def
             .block_timeout_secs
@@ -1084,7 +1125,7 @@ impl Core {
             if let Some(end) = text.find(&marker.full()) {
                 self.touch(&def.name);
                 let output = self.with_hidden_inputs_masked(block_id, &text[..end], |raw| {
-                    clean_output(raw, &marker, &typed, Ended::AtTheMarker)
+                    clean_output(raw, &marker, &typed, typing, Ended::AtTheMarker)
                 });
                 if let Some(id) = block_id {
                     self.state().running.remove(id);
@@ -1093,7 +1134,7 @@ impl Core {
             }
             let output_so_far = || {
                 self.with_hidden_inputs_masked(block_id, &text, |raw| {
-                    clean_output(raw, &marker, &typed, Ended::Early)
+                    clean_output(raw, &marker, &typed, typing, Ended::Early)
                 })
             };
             if Instant::now() >= next_liveness_check {
@@ -1382,9 +1423,13 @@ enum Ended {
     Early,
 }
 
-fn clean_output(raw: &str, marker: &Marker, typed: &str, ended: Ended) -> String {
+fn clean_output(raw: &str, marker: &Marker, typed: &str, typing: Typing, ended: Ended) -> String {
     let text = strip_terminal_escapes(raw);
-    let lines: Vec<&str> = text.lines().collect();
+    let all_lines: Vec<&str> = text.lines().collect();
+    let lines = match typing {
+        Typing::AsOneCommand => after_the_echo_of_one_command(&all_lines, typed),
+        Typing::LineByLine => &all_lines,
+    };
     let echoed_after_the_prompt = match ended {
         Ended::AtTheMarker => lines.iter().rposition(|line| line.contains(&marker.head)),
         Ended::Early => None,
@@ -1400,6 +1445,14 @@ fn clean_output(raw: &str, marker: &Marker, typed: &str, ended: Ended) -> String
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn after_the_echo_of_one_command<'a, 'b>(lines: &'a [&'b str], typed: &str) -> &'a [&'b str] {
+    let last_line = last_line_of_one_command(typed);
+    match lines.iter().rposition(|line| line.contains(&last_line)) {
+        Some(index) => &lines[index + 1..],
+        None => lines,
+    }
 }
 
 fn without_typed_ahead_echo<'a>(line: &'a str, typed: &str) -> Option<Cow<'a, str>> {
@@ -1588,7 +1641,13 @@ mod tests {
 \x1b[1;32m[\x1b]0;me@box: ~\x07me@box:~]$\x1b[0m {typed}\r\n\x1b[?2004l\r"
         );
 
-        let output = clean_output(&raw, &marker, &typed, Ended::AtTheMarker);
+        let output = clean_output(
+            &raw,
+            &marker,
+            &typed,
+            Typing::LineByLine,
+            Ended::AtTheMarker,
+        );
 
         assert_eq!(
             output.trim_end(),
@@ -1602,7 +1661,7 @@ mod tests {
         let typed = marker.command(Preset::Bash.marker_template());
         let raw = format!("uname -s; exit\r\n\x1b[?2004l\r{typed}Linux\r\nexit\r\n");
 
-        let output = clean_output(&raw, &marker, &typed, Ended::Early);
+        let output = clean_output(&raw, &marker, &typed, Typing::LineByLine, Ended::Early);
 
         assert_eq!(output.trim_end(), "uname -s; exit\nLinux\nexit");
     }

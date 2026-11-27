@@ -235,6 +235,75 @@ async fn hidden_input_takes_back_a_one_click_release() {
     assert_eq!(done.read, ReadDecision::Undecided);
 }
 
+fn has_line(output: &str, wanted: &str) -> bool {
+    output.lines().any(|line| line == wanted)
+}
+
+#[tokio::test]
+async fn a_prompt_gets_the_hidden_input_and_the_next_line_still_runs() {
+    let h = harness_with_bash_session().await;
+    let block = run_block(
+        &h.core,
+        "printf 'passphrase: '; read -rs answer; echo; echo \"got ${#answer} characters\"\n\
+echo second-line-ran",
+    )
+    .await;
+    wait_for_output_containing(&h.core, &block.id, "passphrase:").await;
+
+    h.core
+        .send_hidden_input(&block.id, "hunter2hunter2")
+        .await
+        .unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    let output = done.output.unwrap();
+    assert!(has_line(&output, "got 14 characters"), "{output}");
+    assert!(has_line(&output, "second-line-ran"), "{output}");
+}
+
+#[tokio::test]
+async fn a_second_prompt_in_one_block_gets_its_own_hidden_input() {
+    let h = harness_with_bash_session().await;
+    let block = run_block(
+        &h.core,
+        "printf 'one: '; read -rs first; echo; echo \"first ${#first}\"\n\
+printf 'two: '; read -rs second; echo; echo \"second ${#second}\"",
+    )
+    .await;
+    wait_for_output_containing(&h.core, &block.id, "one: ").await;
+
+    h.core.send_hidden_input(&block.id, "aaaa").await.unwrap();
+    wait_for_output_containing(&h.core, &block.id, "two: ").await;
+    h.core.send_hidden_input(&block.id, "bbbbbb").await.unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    let output = done.output.unwrap();
+    assert!(has_line(&output, "first 4"), "{output}");
+    assert!(has_line(&output, "second 6"), "{output}");
+}
+
+#[tokio::test]
+async fn a_syntax_error_ends_the_block() {
+    let h = harness_with_bash_session().await;
+    let block = run_block(&h.core, "echo one\nfi\necho two").await;
+
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    let output = done.output.unwrap();
+    assert!(has_line(&output, "one"), "{output}");
+    assert!(!has_line(&output, "two"), "{output}");
+}
+
+#[tokio::test]
+async fn the_output_of_a_bash_block_holds_no_echo() {
+    let h = harness_with_bash_session().await;
+    let block = run_block(&h.core, "echo checks-passed").await;
+
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    assert_eq!(done.output.unwrap().trim(), "checks-passed");
+}
+
 #[tokio::test]
 async fn read_is_refused_on_a_running_block() {
     let h = harness_with_bash_session().await;
