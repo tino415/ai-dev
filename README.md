@@ -100,8 +100,13 @@ Block text and hidden input reach tmux through stdin (`load-buffer`, `paste-buff
 one runs and a prompt gets the hidden input alone. The output starts after the echo of that command. Lines after
 one that opens another program's prompt, such as `ssh host`, run when that program ends, and the block runs
 until then. Setup commands and iex,
-psql and mysql sessions are typed line by line; there the end marker is typed again after hidden input. After an
-interrupt it is typed again in every session.
+psql and mysql sessions are typed line by line; there the end marker is typed again after hidden input.
+
+`Interrupt` also stops the rest of a bash block. Nothing after the interrupted program runs, whether Ctrl-C killed
+it or it caught Ctrl-C and left on its own, as ping does. A program that stays up after Ctrl-C, such as psql or
+less, keeps the block running, and the rest is dropped once it ends. This works for a shell that runs as you on
+this machine. In a shell opened over ssh or as another user, the rest still runs when the program catches Ctrl-C.
+After an interrupt the end marker is typed again in every session.
 
 A notebook reopened after a restart shows its blocks as `saved`: they hold code only and need a click to run again.
 

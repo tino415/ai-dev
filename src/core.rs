@@ -23,6 +23,8 @@ const HIDDEN_INPUT_SENT: &str = "‹hidden input sent›";
 const HIDDEN_INPUT_PLACEHOLDER: char = '\u{E000}';
 const SCREEN_NOT_KEPT: &str = "‹full-screen program, screen not kept›";
 const SCREEN_NOW: &str = "‹full-screen program, its screen now›";
+const CTRL_C_ECHO: &str = "^C";
+const CTRL_C_ECHO_PLACEHOLDER: char = '\u{E001}';
 const ALTERNATE_SCREEN_ON: &str = "\x1b[?1049h";
 const ALTERNATE_SCREEN_OFF: &str = "\x1b[?1049l";
 const PROMPT_SETTLE: Duration = Duration::from_millis(500);
@@ -77,6 +79,7 @@ struct RunningBlock {
     end_marker_command: String,
     typing: Typing,
     hidden_inputs: Vec<HiddenInput>,
+    interrupted_at: Vec<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -127,14 +130,14 @@ impl Marker {
     fn block_as_one_command(&self, code: &str, typed: &str) -> String {
         let delimiter = format!("{}BLOCK_{}", self.head, self.tail);
         format!(
-            "eval \"$(cat <<'{delimiter}'\n{code}\n{delimiter}\n{}",
+            "trap \"trap - URG; {typed}; kill -INT \\$\\$\" URG; eval \"$(cat <<'{delimiter}'\n{code}\n{delimiter}\n{}",
             last_line_of_one_command(typed)
         )
     }
 }
 
 fn last_line_of_one_command(typed: &str) -> String {
-    format!(")\"; {typed}")
+    format!(")\"; trap - URG; {typed}")
 }
 
 pub fn valid_name(name: &str) -> bool {
@@ -922,15 +925,23 @@ impl Core {
     }
 
     pub async fn interrupt_block(&self, id: &str) -> Result<()> {
-        let session = self.running_session(id)?;
+        let session = self.remember_interrupt(id)?;
+        if self.running_typing(id) == Some(Typing::AsOneCommand) {
+            let _ = self.tmux.send_sigurg_to_the_terminal(&session).await;
+        }
         self.tmux.interrupt(&session).await?;
         self.retype_end_marker(id, &session).await;
         Ok(())
     }
 
-    fn running_session(&self, id: &str) -> Result<String> {
-        let state = self.state();
-        let running = state.running.get(id).ok_or("block is not running")?;
+    fn remember_interrupt(&self, id: &str) -> Result<String> {
+        let mut state = self.state();
+        let running = state.running.get_mut(id).ok_or("block is not running")?;
+        let at = self
+            .tmux
+            .log_len(&running.session)
+            .saturating_sub(running.log_offset);
+        running.interrupted_at.push(at);
         Ok(running.session.clone())
     }
 
@@ -1003,14 +1014,20 @@ impl Core {
         clean: impl FnOnce(&str) -> String,
     ) -> String {
         let hidden = self.hidden_inputs(id);
-        let mut marked = raw.to_string();
-        for input in hidden.iter().rev() {
-            if marked.is_char_boundary(input.sent_at) {
-                marked.insert(input.sent_at, HIDDEN_INPUT_PLACEHOLDER);
-            }
-        }
+        let interrupted_at = self.interrupted_at(id);
+        let marked = with_input_marks(raw, &hidden, &interrupted_at);
         with_hidden_values_masked(&clean(&marked), &hidden)
             .replace(HIDDEN_INPUT_PLACEHOLDER, HIDDEN_INPUT_SENT)
+    }
+
+    fn interrupted_at(&self, id: Option<&str>) -> Vec<usize> {
+        id.and_then(|id| {
+            self.state()
+                .running
+                .get(id)
+                .map(|running| running.interrupted_at.clone())
+        })
+        .unwrap_or_default()
     }
 
     fn hidden_inputs(&self, id: Option<&str>) -> Vec<HiddenInput> {
@@ -1124,6 +1141,7 @@ impl Core {
                     end_marker_command: typed.clone(),
                     typing,
                     hidden_inputs: Vec::new(),
+                    interrupted_at: Vec::new(),
                 },
             );
         }
@@ -1469,10 +1487,52 @@ fn clean_output(raw: &str, marker: &Marker, typed: &str, typing: Typing, ended: 
             if Some(index) == echoed_after_the_prompt {
                 return None;
             }
-            without_typed_ahead_echo(line, typed).filter(|line| !line.contains(&marker.head))
+            without_typed_ahead_echo(line, typed)
+                .and_then(without_the_echo_of_ctrl_c)
+                .filter(|line| !line.contains(&marker.head))
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+enum InputMark {
+    HiddenInput,
+    Interrupt,
+}
+
+fn with_input_marks(raw: &str, hidden: &[HiddenInput], interrupted_at: &[usize]) -> String {
+    let mut marks: Vec<(usize, InputMark)> = hidden
+        .iter()
+        .map(|input| (input.sent_at, InputMark::HiddenInput))
+        .chain(interrupted_at.iter().map(|at| (*at, InputMark::Interrupt)))
+        .collect();
+    marks.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    let mut marked = raw.to_string();
+    for (at, mark) in marks {
+        if !marked.is_char_boundary(at) {
+            continue;
+        }
+        match mark {
+            InputMark::HiddenInput => marked.insert(at, HIDDEN_INPUT_PLACEHOLDER),
+            InputMark::Interrupt => {
+                if let Some(echo) = marked[at..].find(CTRL_C_ECHO).map(|found| at + found) {
+                    marked.replace_range(
+                        echo..echo + CTRL_C_ECHO.len(),
+                        &CTRL_C_ECHO_PLACEHOLDER.to_string(),
+                    );
+                }
+            }
+        }
+    }
+    marked
+}
+
+fn without_the_echo_of_ctrl_c(line: Cow<'_, str>) -> Option<Cow<'_, str>> {
+    if !line.contains(CTRL_C_ECHO_PLACEHOLDER) {
+        return Some(line);
+    }
+    let output = line.replace(CTRL_C_ECHO_PLACEHOLDER, "");
+    (!output.is_empty()).then_some(Cow::Owned(output))
 }
 
 fn without_full_screen_drawings(raw: &str) -> String {
@@ -1744,6 +1804,19 @@ mod tests {
         let output = clean_output(&raw, &marker, &typed, Typing::LineByLine, Ended::Early);
 
         assert_eq!(output.trim_end(), "uname -s; exit\nLinux\nexit");
+    }
+
+    #[test]
+    fn the_terminals_echo_of_ctrl_c_after_an_interrupt_stays_out_of_the_output() {
+        let marker = Marker::new();
+        let typed = marker.command(Preset::Bash.marker_template());
+        let raw = "intr = ^C\r\nup\r\n^Ccaught\r\nstarted\r\n^C\r\n";
+        let interrupted_at = [raw.find("up").unwrap(), raw.find("started").unwrap()];
+
+        let marked = with_input_marks(raw, &[], &interrupted_at);
+        let output = clean_output(&marked, &marker, &typed, Typing::LineByLine, Ended::Early);
+
+        assert_eq!(output, "intr = ^C\nup\ncaught\nstarted");
     }
 
     #[test]

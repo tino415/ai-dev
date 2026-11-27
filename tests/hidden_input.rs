@@ -332,6 +332,72 @@ async fn a_full_screen_prompt_shows_its_text_while_it_waits_and_one_notice_after
     );
 }
 
+const CATCHES_CTRL_C_AND_EXITS: &str =
+    r#"perl -e '$| = 1; $SIG{INT} = sub { print "caught\n"; exit 0 }; print "up\n"; sleep 100'"#;
+
+#[tokio::test]
+async fn interrupt_drops_the_lines_after_a_program_that_catches_ctrl_c() {
+    let h = harness_with_bash_session().await;
+    let block = run_block(
+        &h.core,
+        &format!("{CATCHES_CTRL_C_AND_EXITS}\necho after-interrupt"),
+    )
+    .await;
+    wait_for_output_containing(&h.core, &block.id, "up").await;
+
+    h.core.interrupt_block(&block.id).await.unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    let output = done.output.unwrap();
+    assert!(has_line(&output, "caught"), "{output}");
+    assert!(!output.contains("after-interrupt"), "{output}");
+}
+
+#[tokio::test]
+async fn interrupt_drops_the_rest_of_the_line_the_program_is_on() {
+    let h = harness_with_bash_session().await;
+    let block = run_block(
+        &h.core,
+        &format!("{CATCHES_CTRL_C_AND_EXITS}; echo same-line-after"),
+    )
+    .await;
+    wait_for_output_containing(&h.core, &block.id, "up").await;
+
+    h.core.interrupt_block(&block.id).await.unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    let output = done.output.unwrap();
+    assert!(has_line(&output, "caught"), "{output}");
+    assert!(!output.contains("same-line-after"), "{output}");
+}
+
+#[tokio::test]
+async fn interrupt_drops_the_lines_after_a_program_that_ctrl_c_kills() {
+    let h = harness_with_bash_session().await;
+    let block = run_block(&h.core, "echo started; sleep 100\necho after-interrupt").await;
+    wait_for_output_containing(&h.core, &block.id, "started").await;
+
+    h.core.interrupt_block(&block.id).await.unwrap();
+    let done = wait_for(&h.core, &block.id, BlockState::Finished).await;
+
+    let output = done.output.unwrap();
+    assert!(!output.contains("after-interrupt"), "{output}");
+}
+
+#[tokio::test]
+async fn the_block_after_an_interrupted_one_runs_whole() {
+    let h = harness_with_bash_session().await;
+    let interrupted = run_block(&h.core, "echo started; sleep 100").await;
+    wait_for_output_containing(&h.core, &interrupted.id, "started").await;
+    h.core.interrupt_block(&interrupted.id).await.unwrap();
+    wait_for(&h.core, &interrupted.id, BlockState::Finished).await;
+
+    let next = run_block(&h.core, "echo first\necho second").await;
+    let done = wait_for(&h.core, &next.id, BlockState::Finished).await;
+
+    assert_eq!(done.output.unwrap().trim(), "first\nsecond");
+}
+
 #[tokio::test]
 async fn read_is_refused_on_a_running_block() {
     let h = harness_with_bash_session().await;
