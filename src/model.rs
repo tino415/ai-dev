@@ -76,6 +76,10 @@ impl SessionDef {
             block_timeout_secs: default_block_timeout(),
         }
     }
+
+    pub fn reads_a_block_as_one_command(&self) -> bool {
+        self.marker_template == Preset::Bash.marker_template()
+    }
 }
 
 #[derive(Clone, Debug)]

@@ -80,8 +80,5 @@ async fn an_enter_that_reaches_a_busy_session_late_adds_no_blank_line_to_the_out
     }
 
     let output = output.expect("the block finished");
-    assert_eq!(
-        output.trim_end(),
-        "sleep 0.05; echo one && sleep 0.5 && echo two\none\ntwo"
-    );
+    assert_eq!(output.trim_end(), "one\ntwo");
 }

@@ -19,8 +19,8 @@ header h1 { font-size: 17px; margin: 0; }
 header .sub { color: var(--muted); font-size: 13px; }
 header nav { margin-left: auto; display: flex; gap: 12px; align-items: baseline; font-size: 13px; }
 header nav form { margin: 0; }
-.layout { display: grid; grid-template-columns: 300px 1fr; gap: 16px; padding: 16px; max-width: 1200px; margin: 0 auto; }
-@media (max-width: 800px) { .layout { grid-template-columns: 1fr; } }
+.layout { display: grid; grid-template-columns: 300px minmax(0, 1fr); gap: 16px; padding: 16px; max-width: 1200px; margin: 0 auto; }
+@media (max-width: 800px) { .layout { grid-template-columns: minmax(0, 1fr); } }
 .single { padding: 16px; max-width: 900px; margin: 0 auto; }
 footer.meta { margin-top: 2rem; padding: 8px 16px; border-top: 1px solid var(--line); color: var(--muted); font-size: 12px; }
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px; margin-bottom: 16px; }
@@ -53,7 +53,7 @@ table.vars td:nth-child(3) { text-align: right; }
 .s-bad { background: var(--warn-bg); color: var(--bad); }
 .s-draft { background: var(--code); color: var(--muted); }
 .why { padding: 8px 12px 0; font-size: 13px; color: var(--muted); }
-pre { margin: 8px 12px; padding: 10px; background: var(--code); border-radius: 6px; overflow-x: auto; font: 13px/1.4 ui-monospace, monospace; white-space: pre-wrap; }
+pre { margin: 8px 12px; padding: 10px; background: var(--code); border-radius: 6px; overflow-x: auto; font: 13px/1.4 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
 pre .var { color: var(--agent); font-weight: 600; }
 pre.out { background: transparent; border: 1px dashed var(--line); }
 pre.out.failed { color: var(--bad); }

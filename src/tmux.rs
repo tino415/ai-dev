@@ -1,6 +1,6 @@
 use std::ffi::CStr;
 use std::io::{Read, Seek, SeekFrom};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Output, Stdio};
 use std::time::Duration;
@@ -108,6 +108,24 @@ impl Tmux {
         Some(lines[lines.len().saturating_sub(LAST_LINES_OF_A_DEAD_PANE)..].join("\n"))
     }
 
+    pub async fn is_on_the_alternate_screen(&self, session: &str) -> bool {
+        self.run(&[
+            "display-message",
+            "-p",
+            "-t",
+            &exact_pane(session),
+            "#{alternate_on}",
+        ])
+        .await
+        .is_ok_and(|flag| flag.trim() == "1")
+    }
+
+    pub async fn screen(&self, session: &str) -> Option<String> {
+        self.run(&["capture-pane", "-p", "-t", &exact_pane(session)])
+            .await
+            .ok()
+    }
+
     async fn pane_dead(&self, session: &str) -> Option<bool> {
         self.run(&[
             "list-panes",
@@ -140,6 +158,24 @@ impl Tmux {
         self.run(&["send-keys", "-t", &exact_pane(session), "C-c"])
             .await
             .map(|_| ())
+    }
+
+    pub async fn send_sigurg_to_the_terminal(&self, session: &str) -> Result<(), String> {
+        let terminal = self.pane_terminal(session).await?;
+        tokio::task::spawn_blocking(move || send_sigurg_to_processes_on(terminal.trim()))
+            .await
+            .map_err(|e| e.to_string())?
+    }
+
+    async fn pane_terminal(&self, session: &str) -> Result<String, String> {
+        self.run(&[
+            "display-message",
+            "-p",
+            "-t",
+            &exact_pane(session),
+            "#{pane_tty}",
+        ])
+        .await
     }
 
     async fn paste_through_stdin(&self, session: &str, text: &str) -> Result<(), String> {
@@ -364,6 +400,42 @@ fn login_shell() -> Result<String, String> {
 
 pub fn pty_size(size: TerminalSize) -> pty_process::Size {
     pty_process::Size::new(size.rows, size.cols)
+}
+
+fn send_sigurg_to_processes_on(terminal: &str) -> Result<(), String> {
+    let device = std::fs::metadata(terminal)
+        .map_err(|e| format!("{terminal}: {e}"))?
+        .rdev();
+    for pid in processes_on_the_terminal(proc_tty_nr(device)) {
+        unsafe { libc::kill(pid, libc::SIGURG) };
+    }
+    Ok(())
+}
+
+fn processes_on_the_terminal(tty_nr: u64) -> Vec<libc::pid_t> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    entries
+        .filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok())
+        .filter(|pid: &libc::pid_t| terminal_of_process(*pid) == Some(tty_nr))
+        .collect()
+}
+
+fn terminal_of_process(pid: libc::pid_t) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let after_the_command_name = &stat[stat.rfind(')')? + 1..];
+    after_the_command_name
+        .split_whitespace()
+        .nth(4)?
+        .parse()
+        .ok()
+}
+
+fn proc_tty_nr(device: u64) -> u64 {
+    let major = libc::major(device) as u64;
+    let minor = libc::minor(device) as u64;
+    (minor & 0xff) | (major << 8) | ((minor & !0xff) << 12)
 }
 
 fn exact_session(session: &str) -> String {

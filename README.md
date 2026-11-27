@@ -91,9 +91,22 @@ endpoint has no such tool. `sudo`'s own credential cache is left alone, so later
 its timeout run `sudo` without asking. A prompt not answered within the session's block seconds fails the block, and
 `Run again` retries it.
 
+What a full-screen program draws, such as a gpg passphrase dialog or a pager, is not kept in a block's output:
+one line, `‹full-screen program, screen not kept›`, stands where it was. While the program is up, the output so
+far shows its screen's text under `‹full-screen program, its screen now›`, to you only.
+
 Block text and hidden input reach tmux through stdin (`load-buffer`, `paste-buffer -d`), never as arguments, so
-`ps` shows neither. After hidden input or an interrupt the block's end marker is typed again, because a prompt
-that reads the terminal discards what was typed ahead.
+`ps` shows neither. A bash session gets a block as one command, so the shell has read every line before the first
+one runs and a prompt gets the hidden input alone. The output starts after the echo of that command. Lines after
+one that opens another program's prompt, such as `ssh host`, run when that program ends, and the block runs
+until then. Setup commands and iex,
+psql and mysql sessions are typed line by line; there the end marker is typed again after hidden input.
+
+`Interrupt` also stops the rest of a bash block. Nothing after the interrupted program runs, whether Ctrl-C killed
+it or it caught Ctrl-C and left on its own, as ping does. A program that stays up after Ctrl-C, such as psql or
+less, keeps the block running, and the rest is dropped once it ends. This works for a shell that runs as you on
+this machine. In a shell opened over ssh or as another user, the rest still runs when the program catches Ctrl-C.
+After an interrupt the end marker is typed again in every session.
 
 A notebook reopened after a restart shows its blocks as `saved`: they hold code only and need a click to run again.
 

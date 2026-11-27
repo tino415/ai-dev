@@ -21,6 +21,12 @@ const LIVENESS_CHECK: Duration = Duration::from_secs(1);
 const CHANGES_BUFFERED: usize = 256;
 const HIDDEN_INPUT_SENT: &str = "‹hidden input sent›";
 const HIDDEN_INPUT_PLACEHOLDER: char = '\u{E000}';
+const SCREEN_NOT_KEPT: &str = "‹full-screen program, screen not kept›";
+const SCREEN_NOW: &str = "‹full-screen program, its screen now›";
+const CTRL_C_ECHO: &str = "^C";
+const CTRL_C_ECHO_PLACEHOLDER: char = '\u{E001}';
+const ALTERNATE_SCREEN_ON: &str = "\x1b[?1049h";
+const ALTERNATE_SCREEN_OFF: &str = "\x1b[?1049l";
 const PROMPT_SETTLE: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -71,7 +77,15 @@ struct RunningBlock {
     session: String,
     log_offset: usize,
     end_marker_command: String,
+    typing: Typing,
     hidden_inputs: Vec<HiddenInput>,
+    interrupted_at: Vec<usize>,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum Typing {
+    AsOneCommand,
+    LineByLine,
 }
 
 #[derive(Clone)]
@@ -112,6 +126,18 @@ impl Marker {
             .replace("{head}", &self.head)
             .replace("{tail}", &self.tail)
     }
+
+    fn block_as_one_command(&self, code: &str, typed: &str) -> String {
+        let delimiter = format!("{}BLOCK_{}", self.head, self.tail);
+        format!(
+            "trap \"trap - URG; {typed}; kill -INT \\$\\$\" URG; eval \"$(cat <<'{delimiter}'\n{code}\n{delimiter}\n{}",
+            last_line_of_one_command(typed)
+        )
+    }
+}
+
+fn last_line_of_one_command(typed: &str) -> String {
+    format!(")\"; trap - URG; {typed}")
 }
 
 pub fn valid_name(name: &str) -> bool {
@@ -371,7 +397,7 @@ impl Core {
             self.tmux.type_lines(&def.name, &command).await?;
         }
         for setup in &def.setup_commands {
-            self.run_text(None, def, set, setup)
+            self.run_text(None, def, Typing::LineByLine, set, setup)
                 .await
                 .map_err(|error| format!("setup failed: {error}"))?;
         }
@@ -867,7 +893,13 @@ impl Core {
         let lock = self.session_lock(&def.name);
         let _guard = lock.lock().await;
         self.set_block_state(id, BlockState::Running);
-        let result = self.run_text(Some(id), &def, &set, &block.code).await;
+        let typing = match def.reads_a_block_as_one_command() {
+            true => Typing::AsOneCommand,
+            false => Typing::LineByLine,
+        };
+        let result = self
+            .run_text(Some(id), &def, typing, &set, &block.code)
+            .await;
         self.state().running.remove(id);
         self.finish_block(&block, result, &set);
     }
@@ -881,21 +913,35 @@ impl Core {
             self.forget_last_hidden_input(id);
             return Err(error);
         }
-        self.retype_end_marker(id, &session).await;
+        if self.running_typing(id) == Some(Typing::LineByLine) {
+            self.retype_end_marker(id, &session).await;
+        }
         self.notify_running_block(id);
         Ok(())
     }
 
+    fn running_typing(&self, id: &str) -> Option<Typing> {
+        self.state().running.get(id).map(|running| running.typing)
+    }
+
     pub async fn interrupt_block(&self, id: &str) -> Result<()> {
-        let session = self.running_session(id)?;
+        let session = self.remember_interrupt(id)?;
+        if self.running_typing(id) == Some(Typing::AsOneCommand) {
+            let _ = self.tmux.send_sigurg_to_the_terminal(&session).await;
+        }
         self.tmux.interrupt(&session).await?;
         self.retype_end_marker(id, &session).await;
         Ok(())
     }
 
-    fn running_session(&self, id: &str) -> Result<String> {
-        let state = self.state();
-        let running = state.running.get(id).ok_or("block is not running")?;
+    fn remember_interrupt(&self, id: &str) -> Result<String> {
+        let mut state = self.state();
+        let running = state.running.get_mut(id).ok_or("block is not running")?;
+        let at = self
+            .tmux
+            .log_len(&running.session)
+            .saturating_sub(running.log_offset);
+        running.interrupted_at.push(at);
         Ok(running.session.clone())
     }
 
@@ -967,33 +1013,58 @@ impl Core {
         raw: &str,
         clean: impl FnOnce(&str) -> String,
     ) -> String {
-        let hidden: Vec<(usize, String)> = id
-            .and_then(|id| {
-                self.state()
-                    .running
-                    .get(id)
-                    .map(|running| running.hidden_inputs.clone())
-            })
-            .unwrap_or_default()
-            .into_iter()
-            .map(|input| (input.sent_at, input.value))
-            .collect();
-        let mut marked = raw.to_string();
-        for (sent_at, _) in hidden.iter().rev() {
-            if marked.is_char_boundary(*sent_at) {
-                marked.insert(*sent_at, HIDDEN_INPUT_PLACEHOLDER);
-            }
-        }
-        let mut values: Vec<&str> = hidden
-            .iter()
-            .map(|(_, value)| value.as_str())
-            .filter(|v| !v.is_empty())
-            .collect();
-        values.sort_by_key(|value| std::cmp::Reverse(value.len()));
-        values
-            .into_iter()
-            .fold(clean(&marked), |masked, value| masked.replace(value, "***"))
+        let hidden = self.hidden_inputs(id);
+        let interrupted_at = self.interrupted_at(id);
+        let marked = with_input_marks(raw, &hidden, &interrupted_at);
+        with_hidden_values_masked(&clean(&marked), &hidden)
             .replace(HIDDEN_INPUT_PLACEHOLDER, HIDDEN_INPUT_SENT)
+    }
+
+    fn interrupted_at(&self, id: Option<&str>) -> Vec<usize> {
+        id.and_then(|id| {
+            self.state()
+                .running
+                .get(id)
+                .map(|running| running.interrupted_at.clone())
+        })
+        .unwrap_or_default()
+    }
+
+    fn hidden_inputs(&self, id: Option<&str>) -> Vec<HiddenInput> {
+        id.and_then(|id| {
+            self.state()
+                .running
+                .get(id)
+                .map(|running| running.hidden_inputs.clone())
+        })
+        .unwrap_or_default()
+    }
+
+    async fn with_the_screen_of_a_full_screen_program(
+        &self,
+        id: &str,
+        session: &str,
+        output_so_far: String,
+    ) -> String {
+        let Some(at) = output_so_far.rfind(SCREEN_NOT_KEPT) else {
+            return output_so_far;
+        };
+        let (before, notice_line) = output_so_far.split_at(at);
+        if notice_line.contains('\n') || !self.tmux.is_on_the_alternate_screen(session).await {
+            return output_so_far;
+        }
+        let Some(screen) = self.tmux.screen(session).await else {
+            return output_so_far;
+        };
+        let screen = with_hidden_values_masked(
+            &screen_text_without_drawing(&screen),
+            &self.hidden_inputs(Some(id)),
+        );
+        let notice_line = notice_line.replacen(SCREEN_NOT_KEPT, SCREEN_NOW, 1);
+        match screen.is_empty() {
+            true => format!("{before}{notice_line}"),
+            false => format!("{before}{notice_line}\n{screen}"),
+        }
     }
 
     fn finish_block(&self, ran: &Block, result: Result<String>, set: &VariableSet) {
@@ -1050,6 +1121,7 @@ impl Core {
         &self,
         block_id: Option<&str>,
         def: &SessionDef,
+        typing: Typing,
         set: &VariableSet,
         code: &str,
     ) -> Result<String> {
@@ -1067,12 +1139,22 @@ impl Core {
                     session: def.name.clone(),
                     log_offset: offset,
                     end_marker_command: typed.clone(),
+                    typing,
                     hidden_inputs: Vec::new(),
+                    interrupted_at: Vec::new(),
                 },
             );
         }
-        self.tmux.type_lines(&def.name, &rendered).await?;
-        self.tmux.type_lines(&def.name, &typed).await?;
+        match typing {
+            Typing::AsOneCommand => {
+                let command = marker.block_as_one_command(&rendered, &typed);
+                self.tmux.type_lines(&def.name, &command).await?;
+            }
+            Typing::LineByLine => {
+                self.tmux.type_lines(&def.name, &rendered).await?;
+                self.tmux.type_lines(&def.name, &typed).await?;
+            }
+        }
         self.touch(&def.name);
         let deadline = def
             .block_timeout_secs
@@ -1084,7 +1166,7 @@ impl Core {
             if let Some(end) = text.find(&marker.full()) {
                 self.touch(&def.name);
                 let output = self.with_hidden_inputs_masked(block_id, &text[..end], |raw| {
-                    clean_output(raw, &marker, &typed, Ended::AtTheMarker)
+                    clean_output(raw, &marker, &typed, typing, Ended::AtTheMarker)
                 });
                 if let Some(id) = block_id {
                     self.state().running.remove(id);
@@ -1093,7 +1175,7 @@ impl Core {
             }
             let output_so_far = || {
                 self.with_hidden_inputs_masked(block_id, &text, |raw| {
-                    clean_output(raw, &marker, &typed, Ended::Early)
+                    clean_output(raw, &marker, &typed, typing, Ended::Early)
                 })
             };
             if Instant::now() >= next_liveness_check {
@@ -1108,9 +1190,14 @@ impl Core {
                     output_so_far()
                 ));
             }
-            let so_far = vars::mask(&output_so_far(), set);
-            if let (Some(id), false) = (block_id, so_far.trim().is_empty()) {
-                self.publish_output_so_far(id, so_far);
+            if let Some(id) = block_id {
+                let so_far = self
+                    .with_the_screen_of_a_full_screen_program(id, &def.name, output_so_far())
+                    .await;
+                let so_far = vars::mask(&so_far, set);
+                if !so_far.trim().is_empty() {
+                    self.publish_output_so_far(id, so_far);
+                }
             }
             tokio::time::sleep(OUTPUT_POLL).await;
         }
@@ -1382,9 +1469,13 @@ enum Ended {
     Early,
 }
 
-fn clean_output(raw: &str, marker: &Marker, typed: &str, ended: Ended) -> String {
-    let text = strip_terminal_escapes(raw);
-    let lines: Vec<&str> = text.lines().collect();
+fn clean_output(raw: &str, marker: &Marker, typed: &str, typing: Typing, ended: Ended) -> String {
+    let text = strip_terminal_escapes(&without_full_screen_drawings(raw));
+    let all_lines: Vec<&str> = text.lines().collect();
+    let lines = match typing {
+        Typing::AsOneCommand => after_the_echo_of_one_command(&all_lines, typed),
+        Typing::LineByLine => &all_lines,
+    };
     let echoed_after_the_prompt = match ended {
         Ended::AtTheMarker => lines.iter().rposition(|line| line.contains(&marker.head)),
         Ended::Early => None,
@@ -1396,10 +1487,112 @@ fn clean_output(raw: &str, marker: &Marker, typed: &str, ended: Ended) -> String
             if Some(index) == echoed_after_the_prompt {
                 return None;
             }
-            without_typed_ahead_echo(line, typed).filter(|line| !line.contains(&marker.head))
+            without_typed_ahead_echo(line, typed)
+                .and_then(without_the_echo_of_ctrl_c)
+                .filter(|line| !line.contains(&marker.head))
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+enum InputMark {
+    HiddenInput,
+    Interrupt,
+}
+
+fn with_input_marks(raw: &str, hidden: &[HiddenInput], interrupted_at: &[usize]) -> String {
+    let mut marks: Vec<(usize, InputMark)> = hidden
+        .iter()
+        .map(|input| (input.sent_at, InputMark::HiddenInput))
+        .chain(interrupted_at.iter().map(|at| (*at, InputMark::Interrupt)))
+        .collect();
+    marks.sort_by_key(|(at, _)| std::cmp::Reverse(*at));
+    let mut marked = raw.to_string();
+    for (at, mark) in marks {
+        if !marked.is_char_boundary(at) {
+            continue;
+        }
+        match mark {
+            InputMark::HiddenInput => marked.insert(at, HIDDEN_INPUT_PLACEHOLDER),
+            InputMark::Interrupt => {
+                if let Some(echo) = marked[at..].find(CTRL_C_ECHO).map(|found| at + found) {
+                    marked.replace_range(
+                        echo..echo + CTRL_C_ECHO.len(),
+                        &CTRL_C_ECHO_PLACEHOLDER.to_string(),
+                    );
+                }
+            }
+        }
+    }
+    marked
+}
+
+fn without_the_echo_of_ctrl_c(line: Cow<'_, str>) -> Option<Cow<'_, str>> {
+    if !line.contains(CTRL_C_ECHO_PLACEHOLDER) {
+        return Some(line);
+    }
+    let output = line.replace(CTRL_C_ECHO_PLACEHOLDER, "");
+    (!output.is_empty()).then_some(Cow::Owned(output))
+}
+
+fn without_full_screen_drawings(raw: &str) -> String {
+    let mut kept = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(start) = rest.find(ALTERNATE_SCREEN_ON) {
+        kept.push_str(&rest[..start]);
+        let drawn = &rest[start + ALTERNATE_SCREEN_ON.len()..];
+        let (drawing, after) = match drawn.find(ALTERNATE_SCREEN_OFF) {
+            Some(end) => (&drawn[..end], &drawn[end + ALTERNATE_SCREEN_OFF.len()..]),
+            None => (drawn, ""),
+        };
+        let last_line = kept.rsplit('\n').next().unwrap_or_default();
+        if !strip_terminal_escapes(last_line).is_empty() {
+            kept.push('\n');
+        }
+        kept.push_str(SCREEN_NOT_KEPT);
+        for _ in drawing.matches(HIDDEN_INPUT_PLACEHOLDER) {
+            kept.push(' ');
+            kept.push(HIDDEN_INPUT_PLACEHOLDER);
+        }
+        kept.push('\n');
+        rest = after;
+    }
+    kept.push_str(rest);
+    kept
+}
+
+fn screen_text_without_drawing(screen: &str) -> String {
+    screen
+        .lines()
+        .map(|line| {
+            line.chars()
+                .filter(|c| !('\u{2500}'..='\u{257F}').contains(c))
+                .collect::<String>()
+        })
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn with_hidden_values_masked(text: &str, hidden: &[HiddenInput]) -> String {
+    let mut values: Vec<&str> = hidden
+        .iter()
+        .map(|input| input.value.as_str())
+        .filter(|value| !value.is_empty())
+        .collect();
+    values.sort_by_key(|value| std::cmp::Reverse(value.len()));
+    values.into_iter().fold(text.to_string(), |masked, value| {
+        masked.replace(value, "***")
+    })
+}
+
+fn after_the_echo_of_one_command<'a, 'b>(lines: &'a [&'b str], typed: &str) -> &'a [&'b str] {
+    let last_line = last_line_of_one_command(typed);
+    match lines.iter().rposition(|line| line.contains(&last_line)) {
+        Some(index) => &lines[index + 1..],
+        None => lines,
+    }
 }
 
 fn without_typed_ahead_echo<'a>(line: &'a str, typed: &str) -> Option<Cow<'a, str>> {
@@ -1588,7 +1781,13 @@ mod tests {
 \x1b[1;32m[\x1b]0;me@box: ~\x07me@box:~]$\x1b[0m {typed}\r\n\x1b[?2004l\r"
         );
 
-        let output = clean_output(&raw, &marker, &typed, Ended::AtTheMarker);
+        let output = clean_output(
+            &raw,
+            &marker,
+            &typed,
+            Typing::LineByLine,
+            Ended::AtTheMarker,
+        );
 
         assert_eq!(
             output.trim_end(),
@@ -1602,8 +1801,35 @@ mod tests {
         let typed = marker.command(Preset::Bash.marker_template());
         let raw = format!("uname -s; exit\r\n\x1b[?2004l\r{typed}Linux\r\nexit\r\n");
 
-        let output = clean_output(&raw, &marker, &typed, Ended::Early);
+        let output = clean_output(&raw, &marker, &typed, Typing::LineByLine, Ended::Early);
 
         assert_eq!(output.trim_end(), "uname -s; exit\nLinux\nexit");
+    }
+
+    #[test]
+    fn the_terminals_echo_of_ctrl_c_after_an_interrupt_stays_out_of_the_output() {
+        let marker = Marker::new();
+        let typed = marker.command(Preset::Bash.marker_template());
+        let raw = "intr = ^C\r\nup\r\n^Ccaught\r\nstarted\r\n^C\r\n";
+        let interrupted_at = [raw.find("up").unwrap(), raw.find("started").unwrap()];
+
+        let marked = with_input_marks(raw, &[], &interrupted_at);
+        let output = clean_output(&marked, &marker, &typed, Typing::LineByLine, Ended::Early);
+
+        assert_eq!(output, "intr = ^C\nup\ncaught\nstarted");
+    }
+
+    #[test]
+    fn what_a_full_screen_program_drew_becomes_one_notice() {
+        let marker = Marker::new();
+        let typed = marker.command(Preset::Bash.marker_template());
+        let raw = "before\r\n\x1b[?1049h\x1b[5;10H┌──┐\x1b[6;10H│ PIN │\x1b[?1049lafter\r\n";
+
+        let output = clean_output(raw, &marker, &typed, Typing::LineByLine, Ended::AtTheMarker);
+
+        assert_eq!(
+            output,
+            "before\n‹full-screen program, screen not kept›\nafter"
+        );
     }
 }
